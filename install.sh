@@ -323,7 +323,7 @@ OUTPUT_DIR="/opt/streaming/final"
     HAS_SUBTITLES=$(docker exec ffmpeg ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 "/videos/${VIDEO_FILE}" 2>/dev/null | grep -v '^$')
     
     if [[ -n "$HAS_SUBTITLES" ]]; then
-        echo "Video ya tiene subtítulos. Omitiendo procesamiento."
+        echo "Video ya tiene subtítulos incrustados. Omitiendo procesamiento."
         mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
         echo "=== Video movido a final (sin procesar) ==="
         exit 0
@@ -351,24 +351,16 @@ with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
         f.write(f\"{segment['text'].strip()}\n\n\")
 "
     
-    # Recodificar e incrustar subtítulos
-    echo "Recodificando video..."
-    docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
-        -vf "subtitles=/videos/${BASE_NAME}.srt" \
-        -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
-        -preset medium -crf 23 \
-        -c:a aac -b:a 128k \
-        -y \
-        "/output/${BASE_NAME}.mp4"
-    
-    # Mover a final
-    mv "${OUTPUT_DIR}/${BASE_NAME}.mp4" "${OUTPUT_DIR}/${VIDEO_FILE}" 2>/dev/null || true
+    # Mover video y subtítulos a final (sin recodificar)
+    echo "Moviendo video y subtítulos a final..."
+    mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+    mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
     
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
     rm -f "${PROCESS_DIR}/${BASE_NAME}.srt"
     
-    echo "=== Proceso completado ==="
+    echo "=== Proceso completado (subtítulos generados) ==="
     
 } >> "${LOG_FILE}" 2>&1
 EOF
