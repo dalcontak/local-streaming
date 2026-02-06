@@ -244,8 +244,6 @@ create_docker_compose() {
     RENDER_GROUP_ID=${RENDER_GROUP_ID:-122}
     
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
-version: '3.8'
-
 services:
   jellyfin:
     image: jellyfin/jellyfin:latest
