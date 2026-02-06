@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    user: 1000:1000
+    group_add:
+      - '122'  # Render group ID (ajustar según sistema)
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    volumes:
+      - /opt/streaming/configs/jellyfin:/config
+      - /opt/streaming/data/jellyfin/cache:/cache
+      - /opt/streaming/final:/media
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=America/Mexico_City
+    ports:
+      - 8096:8096/tcp
+
+  whisper:
+    image: ghcr.io/ggml-org/whisper.cpp:main
+    container_name: whisper
+    volumes:
+      - /opt/streaming/data/whisper/models:/models
+      - /opt/streaming/procesando:/videos
+    restart: unless-stopped
+    command: tail -f /dev/null
+
+  ffmpeg:
+    image: linuxserver/ffmpeg:latest
+    container_name: ffmpeg
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    volumes:
+      - /opt/streaming/procesando:/videos
+      - /opt/streaming/final:/output
+    restart: unless-stopped
+    command: tail -f /dev/null

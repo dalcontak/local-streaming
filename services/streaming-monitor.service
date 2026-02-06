@@ -1,0 +1,22 @@
+[Unit]
+Description=Streaming Monitor Service
+Documentation=https://github.com/anomalyco/opencode
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/streaming
+ExecStart=/opt/streaming/scripts/monitor.sh
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/streaming/logs/monitor_stdout.log
+StandardError=append:/opt/streaming/logs/monitor_stderr.log
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

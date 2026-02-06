@@ -1,0 +1,528 @@
+#!/bin/bash
+
+################################################################################
+# SCRIPT DE INSTALACIÓN AUTOMATIZADA DEL STACK DE STREAMING LOCAL
+# Para Orange Pi 5 Plus con Armbian
+################################################################################
+
+set -e  # Exit on error
+set -u  # Exit on undefined variable
+
+################################################################################
+# VARIABLES DE CONFIGURACIÓN
+################################################################################
+
+BASE_DIR="/opt/streaming"
+SCRIPT_DIR="${BASE_DIR}/scripts"
+CONFIG_DIR="${BASE_DIR}/configs"
+LOG_DIR="${BASE_DIR}/logs"
+DATA_DIR="${BASE_DIR}/data"
+VIDEO_INPUT="${BASE_DIR}/entrada"
+VIDEO_PROCESS="${BASE_DIR}/procesando"
+VIDEO_OUTPUT="${BASE_DIR}/final"
+JELLYFIN_CONFIG="${CONFIG_DIR}/jellyfin"
+JELLYFIN_CACHE="${DATA_DIR}/jellyfin/cache"
+WHISPER_MODELS="${DATA_DIR}/whisper/models"
+
+# Colores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+################################################################################
+# FUNCIONES DE LOGGING
+################################################################################
+
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+################################################################################
+# FUNCIONES DE VERIFICACIÓN
+################################################################################
+
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        log_error "Este script debe ejecutarse como root o con sudo"
+        exit 1
+    fi
+}
+
+check_hardware() {
+    log_info "Verificando hardware..."
+    
+    # Verificar ARM
+    if [[ $(uname -m) != "aarch64" ]]; then
+        log_warning "Arquitectura no es ARM64, se procederá con precaución"
+    else
+        log_success "Arquitectura ARM64 detectada"
+    fi
+    
+    # Verificar memoria RAM (mínimo 4GB recomendado)
+    RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
+    if [[ $RAM_GB -lt 4 ]]; then
+        log_warning "Memoria RAM baja (${RAM_GB}GB), se recomienda mínimo 4GB"
+    else
+        log_success "Memoria RAM: ${RAM_GB}GB"
+    fi
+    
+    # Verificar espacio en disco (mínimo 10GB libre)
+    DISK_FREE=$(df -BG / | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [[ $DISK_FREE -lt 10 ]]; then
+        log_error "Espacio en disco insuficiente (${DISK_FREE}GB libre, mínimo 10GB)"
+        exit 1
+    else
+        log_success "Espacio en disco: ${DISK_FREE}GB libre"
+    fi
+    
+    # Verificar dispositivos DRI para aceleración GPU
+    if [[ -d /dev/dri ]]; then
+        log_success "Dispositivos DRI detectados:"
+        ls -la /dev/dri/
+        
+        # Verificar render group
+        if getent group render > /dev/null 2>&1; then
+            RENDER_GROUP_ID=$(getent group render | cut -d: -f3)
+            log_success "Render group existe (ID: ${RENDER_GROUP_ID})"
+        else
+            log_warning "Render group no existe, se creará automáticamente"
+            RENDER_GROUP_ID=122
+        fi
+    else
+        log_warning "Dispositivos DRI no detectados, aceleración hardware no disponible"
+        RENDER_GROUP_ID=122
+    fi
+}
+
+check_docker() {
+    log_info "Verificando Docker..."
+    if command -v docker &> /dev/null; then
+        DOCKER_VERSION=$(docker --version | awk '{print $3}' | sed 's/,//')
+        log_success "Docker ya instalado: versión ${DOCKER_VERSION}"
+    else
+        log_info "Docker no instalado, se instalará automáticamente"
+        return 1
+    fi
+}
+
+################################################################################
+# FUNCIONES DE INSTALACIÓN
+################################################################################
+
+install_dependencies() {
+    log_info "Actualizando repositorios y paquetes..."
+    apt update
+    
+    log_info "Instalando dependencias base..."
+    apt install -y \
+        curl \
+        git \
+        wget \
+        ca-certificates \
+        gnupg \
+        lsb-release \
+        inotify-tools \
+        python3 \
+        python3-pip \
+        ufw
+    
+    log_success "Dependencias instaladas"
+}
+
+install_docker() {
+    log_info "Instalando Docker..."
+    
+    # Agregar repositorio Docker
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    
+    echo \
+      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+      $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+      tee /etc/apt/sources.list.d/docker.list > /dev/null
+    
+    apt update
+    apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    # Habilitar Docker
+    systemctl enable docker
+    systemctl start docker
+    
+    log_success "Docker instalado correctamente"
+}
+
+create_render_group() {
+    if ! getent group render > /dev/null 2>&1; then
+        log_info "Creando grupo render (ID: 122)..."
+        groupadd -g 122 render
+        log_success "Grupo render creado"
+    fi
+    
+    # Agregar usuario actual a grupos necesarios
+    CURRENT_USER=$(logname)
+    usermod -aG docker ${CURRENT_USER}
+    usermod -aG render ${CURRENT_USER}
+    usermod -aG video ${CURRENT_USER}
+    
+    log_success "Usuario ${CURRENT_USER} agregado a grupos: docker, render, video"
+}
+
+create_directory_structure() {
+    log_info "Creando estructura de directorios..."
+    
+    mkdir -p "${BASE_DIR}"
+    mkdir -p "${SCRIPT_DIR}"
+    mkdir -p "${CONFIG_DIR}"
+    mkdir -p "${LOG_DIR}"
+    mkdir -p "${DATA_DIR}"
+    mkdir -p "${VIDEO_INPUT}"
+    mkdir -p "${VIDEO_PROCESS}"
+    mkdir -p "${VIDEO_OUTPUT}"
+    mkdir -p "${JELLYFIN_CONFIG}"
+    mkdir -p "${JELLYFIN_CACHE}"
+    mkdir -p "${WHISPER_MODELS}"
+    
+    # Crear archivo .keep en directorios vacíos
+    touch "${VIDEO_INPUT}/.keep"
+    touch "${VIDEO_PROCESS}/.keep"
+    touch "${VIDEO_OUTPUT}/.keep"
+    
+    # Establecer permisos
+    chown -R ${CURRENT_USER}:${CURRENT_USER} "${BASE_DIR}"
+    chmod -R 755 "${BASE_DIR}"
+    chmod 777 "${VIDEO_INPUT}" "${VIDEO_PROCESS}" "${VIDEO_OUTPUT}"
+    
+    log_success "Estructura de directorios creada en ${BASE_DIR}"
+}
+
+install_whisper_model() {
+    log_info "Descargando modelo medium de Whisper..."
+    
+    # Crear directorio de modelos si no existe
+    mkdir -p "${WHISPER_MODELS}"
+    
+    # Usar whisper.cpp para descargar modelos
+    docker run --rm \
+        -v "${WHISPER_MODELS}:/models" \
+        ghcr.io/ggml-org/whisper.cpp:main \
+        "./models/download-ggml-model.sh medium /models"
+    
+    log_success "Modelo medium de Whisper descargado"
+}
+
+create_docker_compose() {
+    log_info "Creando archivo docker-compose.yml..."
+    
+    RENDER_GROUP_ID=${RENDER_GROUP_ID:-122}
+    
+    cat > "${BASE_DIR}/docker-compose.yml" << EOF
+version: '3.8'
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:latest
+    container_name: jellyfin
+    user: 1000:1000
+    group_add:
+      - '${RENDER_GROUP_ID}'
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    volumes:
+      - ${JELLYFIN_CONFIG}:/config
+      - ${JELLYFIN_CACHE}:/cache
+      - ${VIDEO_OUTPUT}:/media
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ:-UTC}
+    ports:
+      - 8096:8096/tcp
+
+  whisper:
+    image: ghcr.io/ggml-org/whisper.cpp:main
+    container_name: whisper
+    volumes:
+      - ${WHISPER_MODELS}:/models
+      - ${VIDEO_PROCESS}:/videos
+    restart: unless-stopped
+    command: tail -f /dev/null
+
+  ffmpeg:
+    image: linuxserver/ffmpeg:latest
+    container_name: ffmpeg
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    volumes:
+      - ${VIDEO_PROCESS}:/videos
+      - ${VIDEO_OUTPUT}:/output
+    restart: unless-stopped
+    command: tail -f /dev/null
+EOF
+
+    log_success "Archivo docker-compose.yml creado"
+}
+
+create_processing_scripts() {
+    log_info "Creando scripts de procesamiento..."
+    
+    # Script principal de procesamiento
+    cat > "${SCRIPT_DIR}/process_video.sh" << 'EOF'
+#!/bin/bash
+
+VIDEO_FILE="$1"
+if [[ -z "$VIDEO_FILE" ]]; then
+    echo "Uso: $0 <archivo_video>"
+    exit 1
+fi
+
+BASE_NAME=$(basename "$VIDEO_FILE" | sed 's/\.[^.]*$//')
+EXT="${VIDEO_FILE##*.}"
+
+LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
+INPUT_DIR="/opt/streaming/entrada"
+PROCESS_DIR="/opt/streaming/procesando"
+OUTPUT_DIR="/opt/streaming/final"
+
+{
+    echo "=== $(date) ==="
+    echo "Procesando: $VIDEO_FILE"
+    
+    # Mover a procesando
+    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
+    
+    # Generar subtítulos con Whisper
+    echo "Generando subtítulos..."
+    docker exec whisper whisper-cli \
+        -m /models/ggml-medium.bin \
+        -f /videos/"${VIDEO_FILE}" \
+        -osrt
+    
+    # Recodificar e incrustar subtítulos
+    echo "Recodificando video..."
+    docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
+        -vf "subtitles=/videos/${BASE_NAME}.srt" \
+        -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
+        -preset medium -crf 23 \
+        -c:a aac -b:a 128k \
+        -y \
+        "/output/${BASE_NAME}.mp4"
+    
+    # Mover a final
+    mv "${OUTPUT_DIR}/${BASE_NAME}.mp4" "${OUTPUT_DIR}/${VIDEO_FILE}" 2>/dev/null || true
+    
+    # Limpiar archivos temporales
+    rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
+    rm -f "${PROCESS_DIR}/${BASE_NAME}.srt"
+    
+    echo "=== Proceso completado ==="
+    
+} >> "${LOG_FILE}" 2>&1
+EOF
+
+    chmod +x "${SCRIPT_DIR}/process_video.sh"
+    
+    # Script de monitoreo
+    cat > "${SCRIPT_DIR}/monitor.sh" << 'EOF'
+#!/bin/bash
+
+INPUT_DIR="/opt/streaming/entrada"
+LOG_FILE="/opt/streaming/logs/monitor.log"
+
+{
+    echo "=== Monitor iniciado $(date) ==="
+    
+    inotifywait -m -e create -e moved_to --format '%f' "${INPUT_DIR}" | while read FILE
+    do
+        if [[ -f "${INPUT_DIR}/${FILE}" ]]; then
+            echo "$(date): Nuevo archivo detectado: ${FILE}"
+            /opt/streaming/scripts/process_video.sh "${FILE}"
+        fi
+    done
+    
+} >> "${LOG_FILE}" 2>&1
+EOF
+
+    chmod +x "${SCRIPT_DIR}/monitor.sh"
+    
+    log_success "Scripts de procesamiento creados"
+}
+
+create_systemd_services() {
+    log_info "Creando servicios systemd..."
+    
+    # Servicio de monitoreo
+    cat > /etc/systemd/system/streaming-monitor.service << EOF
+[Unit]
+Description=Streaming Monitor Service
+After=network.target docker.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/opt/streaming/scripts/monitor.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable streaming-monitor.service
+    
+    log_success "Servicios systemd creados y habilitados"
+}
+
+configure_firewall() {
+    log_info "Configurando firewall (ufw)..."
+    
+    ufw allow 8096/tcp comment 'Jellyfin Web UI'
+    ufw allow 1900/udp comment 'DLNA/UPnP'
+    ufw allow 7359/udp comment 'DLNA Client Discovery'
+    
+    log_success "Firewall configurado"
+}
+
+start_services() {
+    log_info "Iniciando servicios..."
+    
+    cd "${BASE_DIR}"
+    docker-compose up -d
+    
+    sleep 5
+    
+    # Verificar servicios
+    if docker ps | grep -q jellyfin; then
+        log_success "Jellyfin iniciado correctamente"
+    else
+        log_error "Error al iniciar Jellyfin"
+        return 1
+    fi
+    
+    if docker ps | grep -q whisper; then
+        log_success "Whisper iniciado correctamente"
+    else
+        log_error "Error al iniciar Whisper"
+        return 1
+    fi
+    
+    if docker ps | grep -q ffmpeg; then
+        log_success "FFmpeg iniciado correctamente"
+    else
+        log_error "Error al iniciar FFmpeg"
+        return 1
+    fi
+    
+    systemctl start streaming-monitor.service
+    
+    log_success "Todos los servicios iniciados"
+}
+
+print_summary() {
+    echo ""
+    echo "================================================"
+    echo "  INSTALACIÓN COMPLETADA EXITOSAMENTE"
+    echo "================================================"
+    echo ""
+    echo "Servicios instalados:"
+    echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
+    echo "  - Whisper: Generación de subtítulos con IA"
+    echo "  - FFmpeg: Recodificación de videos"
+    echo "  - Monitor: Automatización de procesamiento"
+    echo ""
+    echo "Directorios:"
+    echo "  - Entrada: ${VIDEO_INPUT}"
+    echo "  - Procesando: ${VIDEO_PROCESS}"
+    echo "  - Final: ${VIDEO_OUTPUT}"
+    echo "  - Scripts: ${SCRIPT_DIR}"
+    echo "  - Logs: ${LOG_DIR}"
+    echo ""
+    echo "Próximos pasos:"
+    echo "  1. Acceder a Jellyfin para configuración inicial"
+    echo "  2. Crear biblioteca apuntando a /media"
+    echo "  3. Copiar videos a ${VIDEO_INPUT}"
+    echo "  4. Los videos se procesarán automáticamente"
+    echo ""
+    echo "Comandos útiles:"
+    echo "  - Ver logs: tail -f ${LOG_DIR}/*.log"
+    echo "  - Ver estado: cd ${BASE_DIR} && docker-compose ps"
+    echo "  - Reiniciar: cd ${BASE_DIR} && docker-compose restart"
+    echo "  - Detener: cd ${BASE_DIR} && docker-compose down"
+    echo ""
+    echo "================================================"
+}
+
+################################################################################
+# FUNCIÓN PRINCIPAL
+################################################################################
+
+main() {
+    echo "================================================"
+    echo "  INSTALACIÓN AUTOMATIZADA DEL STACK DE STREAMING"
+    echo "  Orange Pi 5 Plus - Armbian"
+    echo "================================================"
+    echo ""
+    
+    # Verificar root
+    check_root
+    
+    # Verificar hardware
+    check_hardware
+    
+    # Verificar/installar Docker
+    if ! check_docker; then
+        install_docker
+    fi
+    
+    # Instalar dependencias
+    install_dependencies
+    
+    # Crear grupo render
+    create_render_group
+    
+    # Crear estructura de directorios
+    create_directory_structure
+    
+    # Instalar modelo Whisper
+    install_whisper_model
+    
+    # Crear docker-compose
+    create_docker_compose
+    
+    # Crear scripts
+    create_processing_scripts
+    
+    # Crear servicios systemd
+    create_systemd_services
+    
+    # Configurar firewall
+    configure_firewall
+    
+    # Iniciar servicios
+    start_services
+    
+    # Imprimir resumen
+    print_summary
+    
+    log_success "Instalación completada exitosamente!"
+}
+
+# Ejecutar función principal
+main "$@"
