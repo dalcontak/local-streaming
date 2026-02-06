@@ -66,16 +66,16 @@ tail -f /opt/streaming/logs/monitor.log
 ```bash
 # Ver estado
 cd /opt/streaming
-docker-compose ps
+docker compose ps
 
 # Reiniciar servicios
-docker-compose restart
+docker compose restart
 
 # Detener servicios
-docker-compose down
+docker compose down
 
 # Iniciar servicios
-docker-compose up -d
+docker compose up -d
 
 # Ver logs de contenedores
 docker logs jellyfin
@@ -100,7 +100,7 @@ docker logs ffmpeg
 │   ├── jellyfin/cache/  # Cache Jellyfin
 │   └── whisper/models/  # Modelos Whisper
 ├── logs/                # Logs del sistema
-└── docker-compose.yml   # Configuración Docker
+└── docker compose.yml   # Configuración Docker
 ```
 
 ## Configuración Avanzada
@@ -129,7 +129,7 @@ model = whisper.load_model('medium')  # Opciones: base, small, medium, large
 
 ### Configurar Zona Horaria
 
-Editar `docker-compose.yml`:
+Editar `docker compose.yml`:
 ```yaml
 environment:
   - TZ=America/Mexico_City  # Cambiar a tu zona horaria
@@ -141,8 +141,8 @@ environment:
 
 ```bash
 cd /opt/streaming
-docker-compose pull
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 ### Actualizar Modelo de Whisper
@@ -155,7 +155,7 @@ docker exec whisper python -c "import whisper; whisper.load_model('medium')"
 
 ```bash
 rm -rf /opt/streaming/data/jellyfin/cache/*
-docker-compose restart jellyfin
+docker compose restart jellyfin
 ```
 
 ### Limpiar Logs Antiguos
@@ -185,7 +185,7 @@ docker logs jellyfin
 ls -la /opt/streaming/configs/jellyfin/
 
 # Reiniciar
-docker-compose restart jellyfin
+docker compose restart jellyfin
 ```
 
 ### Whisper falla al generar subtítulos

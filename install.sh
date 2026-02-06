@@ -423,7 +423,7 @@ start_services() {
     log_info "Iniciando servicios..."
     
     cd "${BASE_DIR}"
-    docker-compose up -d
+    docker compose up -d
     
     sleep 5
     
@@ -481,9 +481,9 @@ print_summary() {
     echo ""
     echo "Comandos útiles:"
     echo "  - Ver logs: tail -f ${LOG_DIR}/*.log"
-    echo "  - Ver estado: cd ${BASE_DIR} && docker-compose ps"
-    echo "  - Reiniciar: cd ${BASE_DIR} && docker-compose restart"
-    echo "  - Detener: cd ${BASE_DIR} && docker-compose down"
+    echo "  - Ver estado: cd ${BASE_DIR} && docker compose ps"
+    echo "  - Reiniciar: cd ${BASE_DIR} && docker compose restart"
+    echo "  - Detener: cd ${BASE_DIR} && docker compose down"
     echo ""
     echo "================================================"
 }
