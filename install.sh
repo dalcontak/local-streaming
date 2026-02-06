@@ -216,10 +216,23 @@ install_whisper_model() {
     # Crear directorio de modelos si no existe
     mkdir -p "${WHISPER_MODELS}"
     
-    # Usar rhasspy/whisper que soporta ARM64
+    # Construir imagen Docker personalizada con Whisper para ARM64
+    log_info "Construyendo imagen Docker de Whisper..."
+    cat > /tmp/Dockerfile.whisper << 'EOF'
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y ffmpeg
+RUN pip install whisper openai-whisper
+
+CMD ["tail", "-f", "/dev/null"]
+EOF
+    
+    docker build -t whisper-arm64 /tmp -f /tmp/Dockerfile.whisper
+    
+    # Descargar modelo
     docker run --rm \
         -v "${WHISPER_MODELS}:/root/.cache/whisper" \
-        rhasspy/whisper:latest \
+        whisper-arm64 \
         python -c "import whisper; whisper.load_model('medium')"
     
     log_success "Modelo medium de Whisper descargado"
@@ -255,7 +268,7 @@ services:
       - 8096:8096/tcp
 
   whisper:
-    image: rhasspy/whisper:latest
+    image: whisper-arm64
     container_name: whisper
     volumes:
       - ${WHISPER_MODELS}:/root/.cache/whisper
