@@ -216,11 +216,11 @@ install_whisper_model() {
     # Crear directorio de modelos si no existe
     mkdir -p "${WHISPER_MODELS}"
     
-    # Usar whisper.cpp para descargar modelos
+    # Usar rhasspy/whisper que soporta ARM64
     docker run --rm \
-        -v "${WHISPER_MODELS}:/models" \
-        ghcr.io/ggml-org/whisper.cpp:main \
-        "./models/download-ggml-model.sh medium /models"
+        -v "${WHISPER_MODELS}:/root/.cache/whisper" \
+        rhasspy/whisper:latest \
+        python -c "import whisper; whisper.load_model('medium')"
     
     log_success "Modelo medium de Whisper descargado"
 }
@@ -255,10 +255,10 @@ services:
       - 8096:8096/tcp
 
   whisper:
-    image: ghcr.io/ggml-org/whisper.cpp:main
+    image: rhasspy/whisper:latest
     container_name: whisper
     volumes:
-      - ${WHISPER_MODELS}:/models
+      - ${WHISPER_MODELS}:/root/.cache/whisper
       - ${VIDEO_PROCESS}:/videos
     restart: unless-stopped
     command: tail -f /dev/null
@@ -309,10 +309,16 @@ OUTPUT_DIR="/opt/streaming/final"
     
     # Generar subtítulos con Whisper
     echo "Generando subtítulos..."
-    docker exec whisper whisper-cli \
-        -m /models/ggml-medium.bin \
-        -f /videos/"${VIDEO_FILE}" \
-        -osrt
+    docker exec whisper python -c "
+import whisper
+model = whisper.load_model('medium')
+result = model.transcribe('/videos/${VIDEO_FILE}', language='es')
+with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
+    for i, segment in enumerate(result['segments']):
+        f.write(f'{i+1}\n')
+        f.write(f\"{segment['start']:.3f} --> {segment['end']:.3f}\n\")
+        f.write(f\"{segment['text'].strip()}\n\n\")
+"
     
     # Recodificar e incrustar subtítulos
     echo "Recodificando video..."

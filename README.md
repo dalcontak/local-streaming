@@ -123,8 +123,8 @@ Editar `/opt/streaming/scripts/process_video.sh`:
 ### Cambiar Modelo de Whisper
 
 Editar `/opt/streaming/scripts/process_video.sh`:
-```bash
--m /models/ggml-medium.bin  # Opciones: base, small, medium, large, large-v2, large-v3
+```python
+model = whisper.load_model('medium')  # Opciones: base, small, medium, large
 ```
 
 ### Configurar Zona Horaria
@@ -148,7 +148,7 @@ docker-compose up -d
 ### Actualizar Modelo de Whisper
 
 ```bash
-docker exec whisper bash -c "cd /models && ./download-ggml-model.sh medium /models"
+docker exec whisper python -c "import whisper; whisper.load_model('medium')"
 ```
 
 ### Limpiar Cache de Jellyfin
@@ -198,7 +198,7 @@ tail -f /opt/streaming/logs/process_*.log
 ls -la /opt/streaming/data/whisper/models/
 
 # Re-descargar modelo
-docker exec whisper bash -c "cd /models && ./download-ggml-model.sh medium /models"
+docker exec whisper python -c "import whisper; whisper.load_model('medium')"
 ```
 
 ### FFmpeg falla al recodificar
