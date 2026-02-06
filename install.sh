@@ -338,6 +338,14 @@ OUTPUT_DIR="/opt/streaming/final"
         exit 0
     fi
     
+    # Analizar codecs del video
+    echo "Analizando codecs del video..."
+    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
+    
+    echo "Video codec: ${VIDEO_CODEC:-desconocido}"
+    echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
+    
     # Generar subtítulos con Whisper
     echo "Generando subtítulos con Whisper..."
     docker exec whisper python -c "
@@ -351,7 +359,32 @@ with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
         f.write(f\"{segment['text'].strip()}\n\n\")
 "
     
-    # Mover video y subtítulos a final (sin recodificar)
+    # Verificar si necesita recodificación
+    NEEDS_RECODE=0
+    if [[ "$VIDEO_CODEC" != "h264" ]]; then
+        echo "Video no es H.264, necesita recodificación"
+        NEEDS_RECODE=1
+    fi
+    
+    if [[ "$AUDIO_CODEC" != "aac" ]]; then
+        echo "Audio no es AAC, necesita recodificación"
+        NEEDS_RECODE=1
+    fi
+    
+    if [[ $NEEDS_RECODE -eq 1 ]]; then
+        echo "Recodificando video a H.264 + AAC..."
+        docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
+            -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
+            -preset medium -crf 23 \
+            -c:a aac -b:a 128k \
+            -y \
+            "/videos/${BASE_NAME}_recode.mp4"
+        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${VIDEO_FILE}"
+    else
+        echo "Video ya tiene buenos codecs, sin recodificar"
+    fi
+    
+    # Mover video y subtítulos a final
     echo "Moviendo video y subtítulos a final..."
     mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
     mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
