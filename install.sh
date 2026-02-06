@@ -318,8 +318,28 @@ OUTPUT_DIR="/opt/streaming/final"
     # Mover a procesando
     mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
     
+    # Verificar si el video ya tiene subtítulos
+    echo "Verificando subtítulos existentes..."
+    HAS_SUBTITLES=$(docker exec ffmpeg ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 "/videos/${VIDEO_FILE}" 2>/dev/null | grep -v '^$')
+    
+    if [[ -n "$HAS_SUBTITLES" ]]; then
+        echo "Video ya tiene subtítulos. Omitiendo procesamiento."
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        echo "=== Video movido a final (sin procesar) ==="
+        exit 0
+    fi
+    
+    # Verificar si existe archivo de subtítulos externo
+    if [[ -f "${PROCESS_DIR}/${BASE_NAME}.srt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.vtt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.ass" ]]; then
+        echo "Video tiene archivo de subtítulos externo. Omitiendo generación de subtítulos."
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/" 2>/dev/null || true
+        echo "=== Video movido a final (sin procesar) ==="
+        exit 0
+    fi
+    
     # Generar subtítulos con Whisper
-    echo "Generando subtítulos..."
+    echo "Generando subtítulos con Whisper..."
     docker exec whisper python -c "
 import whisper
 model = whisper.load_model('medium')
