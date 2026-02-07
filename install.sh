@@ -498,38 +498,44 @@ mkdir -p "$LOCK_DIR"
 {
     echo "=== Monitor iniciado $(date) ==="
     echo "Procesamiento paralelo máximo: $MAX_PARALLEL_PROCES archivo(s)"
+    echo "Monitoreando: ${INPUT_DIR}"
     
-    # Monitorear directorio principal y subcarpetas
-    inotifywait -m -e create -e moved_to --format '%w%f' \
-        "${INPUT_DIR}" \
-        "${INPUT_DIR}/Peliculas" \
-        "${INPUT_DIR}/Series" | while read FILE
+    # Monitorear recursivamente el directorio principal
+    inotifywait -m -r -e create -e moved_to --format '%w%f' "${INPUT_DIR}" | while read FILE
     do
-        if [[ -f "$FILE" ]]; then
-            # Obtener ruta relativa desde INPUT_DIR
-            REL_PATH="${FILE#${INPUT_DIR}/}"
-            
-            # Contar procesos activos
-            ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
-            
-            # Esperar si se alcanzó el máximo de procesos paralelos
-            while [[ $ACTIVE_PROCESSES -ge $MAX_PARALLEL_PROCES ]]; do
-                sleep 2
-                ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
-            done
-            
-            # Crear lock único para este archivo
-            LOCK_FILE="$LOCK_DIR/$(basename $FILE)_$$.lock"
-            touch "$LOCK_FILE"
-            echo "$(date): Nuevo archivo detectado: ${REL_PATH}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
-            
-            # Procesar archivo en segundo plano
-            /opt/streaming/scripts/process_video.sh "${REL_PATH}" &
-            
-            # Eliminar lock cuando termine el proceso en segundo plano
-            wait $! && rm -f "$LOCK_FILE"
-            echo "$(date): Procesamiento completado para ${REL_PATH}"
+        # Ignorar archivos temporales y directorios
+        if [[ ! -f "$FILE" ]]; then
+            continue
         fi
+        
+        # Ignorar archivos ocultos
+        if [[ "$(basename $FILE)" == .* ]]; then
+            continue
+        fi
+        
+        # Obtener ruta relativa desde INPUT_DIR
+        REL_PATH="${FILE#${INPUT_DIR}/}"
+        
+        # Contar procesos activos
+        ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
+        
+        # Esperar si se alcanzó el máximo de procesos paralelos
+        while [[ $ACTIVE_PROCESSES -ge $MAX_PARALLEL_PROCES ]]; do
+            sleep 2
+            ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
+        done
+        
+        # Crear lock único para este archivo
+        LOCK_FILE="$LOCK_DIR/$(basename $FILE)_$$.lock"
+        touch "$LOCK_FILE"
+        echo "$(date): Nuevo archivo detectado: ${REL_PATH}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
+        
+        # Procesar archivo en segundo plano
+        /opt/streaming/scripts/process_video.sh "${REL_PATH}" &
+        
+        # Eliminar lock cuando termine el proceso en segundo plano
+        wait $! && rm -f "$LOCK_FILE"
+        echo "$(date): Procesamiento completado para ${REL_PATH}"
     done
     
 } >> "${LOG_FILE}" 2>&1
