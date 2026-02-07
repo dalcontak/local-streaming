@@ -37,19 +37,59 @@ Sistema de streaming local automatizado con recodificación de video, ejecutado 
 
 ### Agregar Videos al Sistema
 
-El sistema clasifica automáticamente las películas y series según la carpeta de origen:
+El sistema clasifica automáticamente las películas y series según la carpeta de origen.
 
-1. **Para Películas**: Copiar a `/opt/streaming/entrada/Peliculas/`
-    ```bash
-    cp /ruta/a/pelicula.mp4 /opt/streaming/entrada/Peliculas/
-    ```
-    El resultado aparecerá en `/media/Peliculas/` en Jellyfin.
+**IMPORTANTE**: Los archivos deben tener nombres que Jellyfin pueda reconocer para descargar metadata, carátulas y descripciones.
 
-2. **Para Series**: Copiar a `/opt/streaming/entrada/Series/`
-    ```bash
-    cp /ruta/a/episodio.mp4 /opt/streaming/entrada/Series/
-    ```
-    El resultado aparecerá en `/media/Series/` en Jellyfin.
+#### Naming para Películas
+
+Copiar a `/opt/streaming/entrada/Peliculas/` con el formato:
+
+```
+Nombre de la Pelicula (Año).ext
+```
+
+Ejemplos:
+```bash
+cp pelicula.mp4 "/opt/streaming/entrada/Peliculas/Inception (2010).mp4"
+cp otra.mkv "/opt/streaming/entrada/Peliculas/The Matrix (1999).mkv"
+cp archivo.avi "/opt/streaming/entrada/Peliculas/Coco (2017).avi"
+```
+
+#### Naming para Series
+
+Copiar a `/opt/streaming/entrada/Series/` con el formato:
+
+```
+Nombre de la Serie S01E01.ext
+```
+
+O mejor aún, organizados en subcarpetas:
+
+```
+entrada/Series/Breaking Bad/S01E01.mp4
+entrada/Series/Breaking Bad/S01E02.mp4
+entrada/Series/The Office/S02E05.mp4
+```
+
+Ejemplos:
+```bash
+# Opción 1: nombre plano
+cp episodio.mp4 "/opt/streaming/entrada/Series/Breaking Bad S01E01.mp4"
+
+# Opción 2: con subcarpeta (recomendado)
+mkdir -p "/opt/streaming/entrada/Series/Breaking Bad"
+cp episodio.mp4 "/opt/streaming/entrada/Series/Breaking Bad/S01E01.mp4"
+```
+
+#### Nombres que Jellyfin NO reconoce
+
+```
+video_descargado_720p.mp4        # Sin nombre ni año
+pelicula.mp4                     # Muy genérico
+EP01.mp4                         # Sin nombre de serie
+rip_bluray_final_v2.mkv          # Sin información útil
+```
 
 **Nota**: El sistema detecta automáticamente y procesa los videos en ambas carpetas.
 
