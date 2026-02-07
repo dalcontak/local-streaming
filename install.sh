@@ -403,11 +403,20 @@ fi
     echo "Pistas de audio detectadas:"
     echo "$AUDIO_STREAMS"
     
-    # Detectar idioma del audio (para registro)
-    AUDIO_CODEC=$(echo "$AUDIO_STREAMS" | head -1 | grep -oP 'codec_name=\K\S+')
+    # Verificar si alguna pista de audio está en el idioma objetivo (español)
+    HAS_SPANISH_AUDIO=$(echo "$AUDIO_STREAMS" | grep -i 'language=spa' || echo "")
+    WHISPER_LANGUAGE_PARAM=""
     
-    # Generar subtítulos con Whisper (detección automática de idioma)
-    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL, detección automática de idioma)..."
+    if [[ -n "$HAS_SPANISH_AUDIO" ]]; then
+        echo "Audio detectado en español. Usando idioma forzado: es"
+        WHISPER_LANGUAGE_PARAM="language='es'"
+    else
+        echo "No hay audio en español detectado. Whisper detectará el idioma automáticamente."
+        WHISPER_LANGUAGE_PARAM=""
+    fi
+    
+    # Generar subtítulos con Whisper
+    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL)..."
     docker exec whisper python3 -c "
 import whisper
 
@@ -419,6 +428,7 @@ def format_timestamp(seconds):
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 model = whisper.load_model('${WHISPER_MODEL}')
+${WHISPER_LANGUAGE_PARAM}
 result = model.transcribe('/videos/${JUST_FILENAME}')
 detected_language = result.get('language', 'desconocido')
 print(f'Idioma detectado por Whisper: {detected_language}')
