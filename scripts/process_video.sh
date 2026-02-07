@@ -1,111 +1,117 @@
 #!/bin/bash
 
-################################################################################
-# SCRIPT DE PROCESAMIENTO DE VIDEOS
-# Genera subtítulos con Whisper y recodifica video con FFmpeg
-################################################################################
+# NOTA: Este archivo es de referencia. El install.sh genera la versión
+# actualizada en /opt/streaming/scripts/process_video.sh
 
-set -e
+# Cargar configuración
+source /opt/streaming/scripts/config.sh
 
-# Verificar argumentos
-if [[ $# -eq 0 ]]; then
-    echo "Uso: $0 <archivo_video> [idioma]"
-    echo ""
-    echo "Ejemplos:"
-    echo "  $0 video.mp4"
-    echo "  $0 video.mp4 es"
-    echo ""
+VIDEO_FILE="$1"
+if [[ -z "$VIDEO_FILE" ]]; then
+    echo "Uso: $0 <archivo_video>"
     exit 1
 fi
 
-VIDEO_FILE="$1"
-LANGUAGE="${2:-es}"  # Español por defecto
-
-# Variables
-BASE_NAME=$(basename "$VIDEO_FILE" | sed 's/\.[^.]*$//')
+JUST_FILENAME=$(basename "$VIDEO_FILE")
+BASE_NAME=$(echo "$JUST_FILENAME" | sed 's/\.[^.]*$//')
 EXT="${VIDEO_FILE##*.}"
-LOG_DIR="/opt/streaming/logs"
-LOG_FILE="${LOG_DIR}/process_${BASE_NAME}.log"
+
+LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
 INPUT_DIR="/opt/streaming/entrada"
 PROCESS_DIR="/opt/streaming/procesando"
 OUTPUT_DIR="/opt/streaming/final"
 
-# Función de logging
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "${LOG_FILE}"
-}
-
-# Verificar que el archivo existe
-if [[ ! -f "${INPUT_DIR}/${VIDEO_FILE}" ]]; then
-    echo "Error: Archivo no encontrado: ${INPUT_DIR}/${VIDEO_FILE}"
-    exit 1
+# Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
+SUBFOLDER=""
+if [[ "$VIDEO_FILE" == Peliculas/* ]]; then
+    SUBFOLDER="Peliculas"
+elif [[ "$VIDEO_FILE" == Series/* ]]; then
+    SUBFOLDER="Series"
 fi
 
-# Crear directorio de logs si no existe
-mkdir -p "${LOG_DIR}"
-
-log "=== Iniciando procesamiento de: ${VIDEO_FILE} ==="
-log "Idioma de subtítulos: ${LANGUAGE}"
-
-# Paso 1: Mover a procesando
-log "Paso 1: Moviendo archivo a procesando..."
-mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
-log "Archivo movido a: ${PROCESS_DIR}/${VIDEO_FILE}"
-
-# Paso 2: Generar subtítulos con Whisper
-log "Paso 2: Generando subtítulos con Whisper..."
-if docker exec whisper whisper-cli \
-    -m /models/ggml-medium.bin \
-    -f "/videos/${VIDEO_FILE}" \
-    -l "${LANGUAGE}" \
-    -osrt; then
-    log "Subtítulos generados exitosamente"
-else
-    log "Error al generar subtítulos"
-    # Continuar aunque falle Whisper
-fi
-
-# Paso 3: Recodificar e incrustar subtítulos
-log "Paso 3: Recodificando video e incrustando subtítulos..."
-
-if [[ -f "${PROCESS_DIR}/${BASE_NAME}.srt" ]]; then
-    log "Incrustando subtítulos..."
-    docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
-        -vf "subtitles=/videos/${BASE_NAME}.srt:force_style='FontName=Arial,FontSize=24,PrimaryColour=&H00FFFFFF'" \
-        -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
-        -preset medium -crf 23 \
-        -c:a aac -b:a 128k \
-        -movflags +faststart \
-        -y \
-        "/output/${VIDEO_FILE}"
-else
-    log "No se encontraron subtítulos, recodificando sin subtítulos..."
-    docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
-        -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
-        -preset medium -crf 23 \
-        -c:a aac -b:a 128k \
-        -movflags +faststart \
-        -y \
-        "/output/${VIDEO_FILE}"
-fi
-
-if [[ -f "${OUTPUT_DIR}/${VIDEO_FILE}" ]]; then
-    log "Video recodificado exitosamente"
-else
-    log "Error: No se generó el video de salida"
-    # Mover original de vuelta a entrada en caso de error
-    mv "${PROCESS_DIR}/${VIDEO_FILE}" "${INPUT_DIR}/${VIDEO_FILE}"
-    exit 1
-fi
-
-# Paso 4: Limpiar archivos temporales
-log "Paso 4: Limpiando archivos temporales..."
-rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
-rm -f "${PROCESS_DIR}/${BASE_NAME}.srt"
-log "Archivos temporales eliminados"
-
-log "=== Procesamiento completado exitosamente ==="
-echo ""
-echo "Video procesado: ${OUTPUT_DIR}/${VIDEO_FILE}"
-echo "Logs: ${LOG_FILE}"
-echo ""
+{
+    echo "=== $(date) ==="
+    echo "Procesando: $VIDEO_FILE"
+    echo "Configuración: codec=$VIDEO_CODEC_TARGET/$AUDIO_CODEC_TARGET, crf=$VIDEO_CRF, preset=$FFMPEG_PRESET"
+    if [[ -n "$SUBFOLDER" ]]; then
+        echo "Subcarpeta detectada: $SUBFOLDER"
+    fi
+    
+    # Mover archivo a procesando/ (siempre en la raíz, sin subcarpeta)
+    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
+    
+    # A partir de aquí, el archivo está en procesando/nombre.ext
+    # Docker monta procesando:/videos, así que la ruta Docker es /videos/nombre.ext
+    
+    # Analizar codecs del video
+    echo "Analizando codecs del video..."
+    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    
+    echo "Video codec: ${VIDEO_CODEC:-desconocido}"
+    echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
+    
+    # Verificar si necesita recodificación
+    NEEDS_RECODE=0
+    if [[ "$VIDEO_CODEC" != "${VIDEO_CODEC_TARGET}" ]]; then
+        echo "Video no es ${VIDEO_CODEC_TARGET}, necesita recodificación"
+        NEEDS_RECODE=1
+    fi
+    
+    if [[ "$AUDIO_CODEC" != "${AUDIO_CODEC_TARGET}" ]]; then
+        echo "Audio no es ${AUDIO_CODEC_TARGET}, necesita recodificación"
+        NEEDS_RECODE=1
+    fi
+    
+    if [[ $NEEDS_RECODE -eq 1 ]]; then
+        echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
+        
+        # Intentar con aceleración hardware (VAAPI), si falla usar libx264
+        VAAPI_OK=0
+        if [[ -e /dev/dri/renderD128 ]]; then
+            echo "Intentando recodificación con VAAPI (aceleración hardware)..."
+            if docker exec ffmpeg ffmpeg -vaapi_device /dev/dri/renderD128 \
+                -i "/videos/${JUST_FILENAME}" \
+                -vf 'format=nv12,hwupload' \
+                -c:v h264_vaapi -qp ${VIDEO_CRF} \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                VAAPI_OK=1
+                echo "Recodificación con VAAPI exitosa"
+            else
+                echo "VAAPI falló, usando libx264 (software)..."
+            fi
+        fi
+        
+        if [[ $VAAPI_OK -eq 0 ]]; then
+            echo "Recodificando con libx264 (software)..."
+            docker exec ffmpeg ffmpeg -i "/videos/${JUST_FILENAME}" \
+                -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4"
+            echo "Recodificación con libx264 completada"
+        fi
+        
+        # Reemplazar archivo original con el recodificado
+        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${JUST_FILENAME}"
+    else
+        echo "Video ya tiene buenos codecs, sin recodificar"
+    fi
+    
+    # Mover video a final
+    echo "Moviendo video a final..."
+    if [[ -n "$SUBFOLDER" ]]; then
+        mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
+        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
+    else
+        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
+    fi
+    
+    # Limpiar archivos temporales
+    rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    
+    echo "=== Proceso completado ==="
+    
+} >> "${LOG_FILE}" 2>&1

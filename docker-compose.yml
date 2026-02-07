@@ -20,15 +20,6 @@ services:
     environment:
       - TZ=America/Mexico_City
 
-  whisper:
-    image: whisper-arm64
-    container_name: whisper
-    volumes:
-      - /opt/streaming/data/whisper/models:/root/.cache/whisper
-      - /opt/streaming/procesando:/videos
-    restart: unless-stopped
-    command: sleep infinity
-
   ffmpeg:
     image: ffmpeg-arm64
     container_name: ffmpeg

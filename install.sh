@@ -22,7 +22,6 @@ VIDEO_PROCESS="${BASE_DIR}/procesando"
 VIDEO_OUTPUT="${BASE_DIR}/final"
 JELLYFIN_CONFIG="${CONFIG_DIR}/jellyfin"
 JELLYFIN_CACHE="${DATA_DIR}/jellyfin/cache"
-WHISPER_MODELS="${DATA_DIR}/whisper/models"
 
 # Colores para output
 RED='\033[0;31m'
@@ -195,7 +194,6 @@ create_directory_structure() {
     mkdir -p "${VIDEO_OUTPUT}"
     mkdir -p "${JELLYFIN_CONFIG}"
     mkdir -p "${JELLYFIN_CACHE}"
-    mkdir -p "${WHISPER_MODELS}"
     
     # Crear subcarpetas para clasificación
     mkdir -p "${VIDEO_INPUT}/Peliculas"
@@ -216,39 +214,7 @@ create_directory_structure() {
     log_success "Estructura de directorios creada en ${BASE_DIR}"
 }
 
-install_whisper_model() {
-    # Crear directorio de modelos si no existe
-    mkdir -p "${WHISPER_MODELS}"
-    
-    # Verificar si la imagen whisper-arm64 ya existe
-    if docker image inspect whisper-arm64 > /dev/null 2>&1; then
-        log_success "Imagen Docker whisper-arm64 ya existe, omitiendo construcción"
-    else
-        log_info "Construyendo imagen Docker de Whisper..."
-        cat > /tmp/Dockerfile.whisper << 'EOF'
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y ffmpeg
-RUN pip install whisper openai-whisper
-
-CMD ["sleep", "infinity"]
-EOF
-        docker build -t whisper-arm64 /tmp -f /tmp/Dockerfile.whisper
-        log_success "Imagen Docker whisper-arm64 construida"
-    fi
-    
-    # Verificar si el modelo medium ya fue descargado
-    if ls "${WHISPER_MODELS}"/medium.pt > /dev/null 2>&1; then
-        log_success "Modelo medium de Whisper ya existe, omitiendo descarga"
-    else
-        log_info "Descargando modelo medium de Whisper..."
-        docker run --rm \
-            -v "${WHISPER_MODELS}:/root/.cache/whisper" \
-            whisper-arm64 \
-            python -c "import whisper; whisper.load_model('medium')"
-        log_success "Modelo medium de Whisper descargado"
-    fi
-    
+build_docker_images() {
     # Verificar si la imagen ffmpeg-arm64 ya existe
     if docker image inspect ffmpeg-arm64 > /dev/null 2>&1; then
         log_success "Imagen Docker ffmpeg-arm64 ya existe, omitiendo construcción"
@@ -290,15 +256,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=${TZ:-UTC}
-
-  whisper:
-    image: whisper-arm64
-    container_name: whisper
-    volumes:
-      - ${WHISPER_MODELS}:/root/.cache/whisper
-      - ${VIDEO_PROCESS}:/videos
-    restart: unless-stopped
-    command: /bin/sh -c "sleep infinity"
 
   ffmpeg:
     image: ffmpeg-arm64
@@ -352,7 +309,7 @@ fi
 {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
-    echo "Configuración: modelo=$WHISPER_MODEL, idioma=$SUBTITLE_LANGUAGE, codec=$VIDEO_CODEC_TARGET/$AUDIO_CODEC_TARGET, crf=$VIDEO_CRF, preset=$FFMPEG_PRESET"
+    echo "Configuración: codec=$VIDEO_CODEC_TARGET/$AUDIO_CODEC_TARGET, crf=$VIDEO_CRF, preset=$FFMPEG_PRESET"
     if [[ -n "$SUBFOLDER" ]]; then
         echo "Subcarpeta detectada: $SUBFOLDER"
     fi
@@ -363,81 +320,13 @@ fi
     # A partir de aquí, el archivo está en procesando/nombre.ext
     # Docker monta procesando:/videos, así que la ruta Docker es /videos/nombre.ext
     
-    # Verificar si el video ya tiene subtítulos incrustados
-    echo "Verificando subtítulos existentes..."
-    HAS_SUBTITLES=$(docker exec ffmpeg ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 "/videos/${JUST_FILENAME}" 2>/dev/null | grep -v '^$')
-    
-    if [[ -n "$HAS_SUBTITLES" ]]; then
-        echo "Video ya tiene subtítulos incrustados. Omitiendo procesamiento."
-        if [[ -n "$SUBFOLDER" ]]; then
-            mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
-        else
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
-        fi
-        echo "=== Video movido a final (sin procesar) ==="
-        exit 0
-    fi
-    
-    # Verificar si existe archivo de subtítulos externo
-    if [[ -f "${PROCESS_DIR}/${BASE_NAME}.srt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.vtt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.ass" ]]; then
-        echo "Video tiene archivo de subtítulos externo. Omitiendo generación de subtítulos."
-        if [[ -n "$SUBFOLDER" ]]; then
-            mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
-            mv "${PROCESS_DIR}/${BASE_NAME}".{srt,vtt,ass} "${OUTPUT_DIR}/${SUBFOLDER}/" 2>/dev/null || true
-        else
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
-            mv "${PROCESS_DIR}/${BASE_NAME}".{srt,vtt,ass} "${OUTPUT_DIR}/" 2>/dev/null || true
-        fi
-        echo "=== Video movido a final (sin procesar) ==="
-        exit 0
-    fi
-    
     # Analizar codecs del video
     echo "Analizando codecs del video..."
     VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_STREAMS=$(docker exec ffmpeg ffprobe -v error -select_streams a -show_entries stream=index,codec_name:language -of default=noprint_wrappers=1 "/videos/${JUST_FILENAME}" 2>/dev/null)
+    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
-    echo "Pistas de audio detectadas:"
-    echo "$AUDIO_STREAMS"
-    
-    # Verificar si alguna pista de audio está en el idioma objetivo (español)
-    HAS_SPANISH_AUDIO=$(echo "$AUDIO_STREAMS" | grep -i 'language=spa' || echo "")
-    WHISPER_LANGUAGE_PARAM=""
-    
-    if [[ -n "$HAS_SPANISH_AUDIO" ]]; then
-        echo "Audio detectado en español. Usando idioma forzado: es"
-        WHISPER_LANGUAGE_PARAM="language='es'"
-    else
-        echo "No hay audio en español detectado. Whisper detectará el idioma automáticamente."
-        WHISPER_LANGUAGE_PARAM=""
-    fi
-    
-    # Generar subtítulos con Whisper
-    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL)..."
-    docker exec whisper python3 -c "
-import whisper
-
-def format_timestamp(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
-    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
-
-model = whisper.load_model('${WHISPER_MODEL}')
-${WHISPER_LANGUAGE_PARAM}
-result = model.transcribe('/videos/${JUST_FILENAME}')
-detected_language = result.get('language', 'desconocido')
-print(f'Idioma detectado por Whisper: {detected_language}')
-with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
-    for i, segment in enumerate(result['segments']):
-        f.write(f'{i+1}\n')
-        f.write(f'{format_timestamp(segment[\"start\"])} --> {format_timestamp(segment[\"end\"])}\n')
-        f.write(f'{segment[\"text\"].strip()}\n\n')
-"
+    echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
     
     # Verificar si necesita recodificación
     NEEDS_RECODE=0
@@ -488,22 +377,19 @@ with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
         echo "Video ya tiene buenos codecs, sin recodificar"
     fi
     
-    # Mover video y subtítulos a final
-    echo "Moviendo video y subtítulos a final..."
+    # Mover video a final
+    echo "Moviendo video a final..."
     if [[ -n "$SUBFOLDER" ]]; then
         mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
         mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
-        mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${SUBFOLDER}/${BASE_NAME}.srt" 2>/dev/null || true
     else
         mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
-        mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
     fi
     
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
-    rm -f "${PROCESS_DIR}/${BASE_NAME}.srt"
     
-    echo "=== Proceso completado (subtítulos generados) ==="
+    echo "=== Proceso completado ==="
     
 } >> "${LOG_FILE}" 2>&1
 PROCESS_EOF
@@ -519,12 +405,6 @@ PROCESS_EOF
 # 1 = secuencial (recomendado para Orange Pi 5 Plus)
 # 2-3 = paralelo (si tienes más RAM/CPU)
 MAX_PARALLEL_PROCES=1
-
-# Idioma predeterminado para subtítulos (es, en, fr, de, etc.)
-SUBTITLE_LANGUAGE="es"
-
-# Modelo de Whisper: tiny, base, small, medium, large
-WHISPER_MODEL="medium"
 
 # Codec de video para recodificación: h264, h265
 VIDEO_CODEC_TARGET="h264"
@@ -710,13 +590,6 @@ start_services() {
         return 1
     fi
     
-    if docker ps | grep -q whisper; then
-        log_success "Whisper iniciado correctamente"
-    else
-        log_error "Error al iniciar Whisper"
-        return 1
-    fi
-    
     if docker ps | grep -q ffmpeg; then
         log_success "FFmpeg iniciado correctamente"
     else
@@ -738,7 +611,6 @@ print_summary() {
     echo ""
     echo "Servicios instalados:"
     echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
-    echo "  - Whisper: Generación de subtítulos con IA"
     echo "  - FFmpeg: Recodificación de videos"
     echo "  - Monitor: Automatización de procesamiento"
     echo ""
@@ -795,8 +667,8 @@ main() {
     # Crear estructura de directorios
     create_directory_structure
     
-    # Instalar modelo Whisper
-    install_whisper_model
+    # Construir imágenes Docker
+    build_docker_images
     
     # Crear docker-compose
     create_docker_compose

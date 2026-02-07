@@ -2,14 +2,14 @@
 
 ## Descripción
 
-Sistema de streaming local automatizado con generación de subtítulos mediante IA, ejecutado en Orange Pi 5 Plus.
+Sistema de streaming local automatizado con recodificación de video, ejecutado en Orange Pi 5 Plus.
 
 ## Arquitectura
 
 ```
 [Usuario] → Copia video → [entrada/] → [Automatización] → [procesando/] → [final/] → [Jellyfin]
                                                  ↓
-                                         [Whisper → FFmpeg]
+                                             [FFmpeg]
 ```
 
 ## Instalación Rápida
@@ -32,7 +32,6 @@ Sistema de streaming local automatizado con generación de subtítulos mediante 
     - Completar configuración inicial
     - Crear biblioteca de **Películas** apuntando a `/media/Peliculas`
     - Crear biblioteca de **Series** apuntando a `/media/Series`
-    - Instalar plugins: Open Subtitles, Subtitle Extract
 
 ## Uso Básico
 
@@ -96,7 +95,6 @@ docker compose up -d
 
 # Ver logs de contenedores
 docker logs jellyfin
-docker logs whisper
 docker logs ffmpeg
 ```
 
@@ -118,8 +116,7 @@ docker logs ffmpeg
 ├── configs/             # Configuraciones
 │   └── jellyfin/        # Configuración Jellyfin
 ├── data/                # Datos
-│   ├── jellyfin/cache/  # Cache Jellyfin
-│   └── whisper/models/  # Modelos Whisper
+│   └── jellyfin/cache/  # Cache Jellyfin
 ├── logs/                # Logs del sistema
 └── docker-compose.yml   # Configuración Docker
 ```
@@ -133,12 +130,6 @@ Editar `/opt/streaming/scripts/config.sh`:
 ```bash
 # Número máximo de procesos paralelos (1 = secuencial, 2+ = paralelo)
 MAX_PARALLEL_PROCES=1
-
-# Idioma de subtítulos (es, en, fr, de, etc.)
-SUBTITLE_LANGUAGE="es"
-
-# Modelo de Whisper (tiny, base, small, medium, large)
-WHISPER_MODEL="medium"
 
 # Codec objetivo (h264, h265)
 VIDEO_CODEC_TARGET="h264"
@@ -169,22 +160,6 @@ MAX_PARALLEL_PROCES=2  # Procesar hasta 2 videos al mismo tiempo
 - **4GB RAM**: 1 proceso (secuencial)
 - **8GB+ RAM**: 2-3 procesos (paralelo)
 
-### Modificar Idioma de Subtítulos
-
-Editar `/opt/streaming/scripts/config.sh`:
-```bash
-SUBTITLE_LANGUAGE="es"  # Cambiar a tu idioma preferido
-```
-
-### Cambiar Modelo de Whisper
-
-Editar `/opt/streaming/scripts/config.sh`:
-```bash
-WHISPER_MODEL="medium"  # Opciones: tiny, base, small, medium, large
-```
-
-Más información sobre modelos: https://github.com/openai/whisper
-
 ### Ajustar Calidad de Video
 
 Editar `/opt/streaming/scripts/config.sh`:
@@ -195,7 +170,7 @@ FFMPEG_PRESET="medium"   # ultrafast, superfast, veryfast, faster, fast, medium,
 
 ### Configurar Zona Horaria
 
-Editar `docker compose.yml`:
+Editar `docker-compose.yml`:
 ```yaml
 environment:
   - TZ=America/Mexico_City  # Cambiar a tu zona horaria
@@ -209,12 +184,6 @@ environment:
 cd /opt/streaming
 docker compose pull
 docker compose up -d
-```
-
-### Actualizar Modelo de Whisper
-
-```bash
-docker exec whisper python -c "import whisper; whisper.load_model('medium')"
 ```
 
 ### Limpiar Cache de Jellyfin
@@ -252,19 +221,6 @@ ls -la /opt/streaming/configs/jellyfin/
 
 # Reiniciar
 docker compose restart jellyfin
-```
-
-### Whisper falla al generar subtítulos
-
-```bash
-# Ver logs de procesamiento
-tail -f /opt/streaming/logs/process_*.log
-
-# Verificar modelo existe
-ls -la /opt/streaming/data/whisper/models/
-
-# Re-descargar modelo
-docker exec whisper python -c "import whisper; whisper.load_model('medium')"
 ```
 
 ### FFmpeg falla al recodificar
@@ -337,7 +293,6 @@ sudo ln -sf /mnt/nfs/series /opt/streaming/entrada/Series
 
 ### Recomendaciones para Orange Pi 5 Plus
 
-- **Modelo Whisper**: `medium` (balance calidad/velocidad)
 - **CRF FFmpeg**: `23` (calidad buena sin sacrificar velocidad)
 - **Preset FFmpeg**: `medium`
 - **Concurrent processing**: Evitar procesar más de 1-2 videos simultáneamente en 4GB RAM
@@ -406,7 +361,6 @@ sudo reboot
 ## Soporte y Documentación
 
 - **Jellyfin**: https://jellyfin.org/docs/
-- **Whisper**: https://github.com/openai/whisper
 - **FFmpeg**: https://ffmpeg.org/documentation.html
 - **Docker**: https://docs.docker.com/
 
@@ -415,7 +369,6 @@ sudo reboot
 Este sistema utiliza software open-source:
 
 - Jellyfin: GPL v2.0
-- Whisper: MIT License
 - FFmpeg: GPL/LGPL
 - Docker: Apache 2.0
 
@@ -425,6 +378,6 @@ Para mejoras o reporte de bugs, por favor utiliza el sistema de tickets del proy
 
 ---
 
-**Versión**: 1.0
-**Fecha**: 2026-02-05
+**Versión**: 1.1
+**Fecha**: 2026-02-07
 **Desarrollado para**: Orange Pi 5 Plus con Armbian
