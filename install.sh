@@ -306,6 +306,24 @@ elif [[ "$VIDEO_FILE" == Series/* ]]; then
     SUBFOLDER="Series"
 fi
 
+# Función de limpieza en caso de error
+cleanup_on_error() {
+    echo "ERROR: Proceso interrumpido o fallido para ${JUST_FILENAME}"
+    # Eliminar archivo parcial de recodificación si existe
+    rm -f "${PROCESS_DIR}/${BASE_NAME}_recode.mp4"
+    # Devolver archivo original a entrada/ si sigue en procesando/
+    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+        echo "Devolviendo ${JUST_FILENAME} a entrada/..."
+        if [[ -n "$SUBFOLDER" ]]; then
+            mkdir -p "${INPUT_DIR}/${SUBFOLDER}"
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
+        else
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${JUST_FILENAME}"
+        fi
+        echo "Archivo devuelto a entrada/ para reprocesar"
+    fi
+}
+
 {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
@@ -313,6 +331,9 @@ fi
     if [[ -n "$SUBFOLDER" ]]; then
         echo "Subcarpeta detectada: $SUBFOLDER"
     fi
+    
+    # Activar trap para limpiar en caso de error o interrupción
+    trap cleanup_on_error ERR EXIT
     
     # Mover archivo a procesando/ (siempre en la raíz, sin subcarpeta)
     mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
@@ -389,6 +410,9 @@ fi
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
     
+    # Desactivar trap - proceso exitoso
+    trap - ERR EXIT
+    
     echo "=== Proceso completado ==="
     
 } >> "${LOG_FILE}" 2>&1
@@ -431,6 +455,7 @@ EOF
 source /opt/streaming/scripts/config.sh
 
 INPUT_DIR="/opt/streaming/entrada"
+PROCESS_DIR="/opt/streaming/procesando"
 LOG_FILE="/opt/streaming/logs/monitor.log"
 LOCK_DIR="/tmp/streaming_processing"
 
@@ -447,6 +472,38 @@ cleanup_stale_locks() {
             rm -f "$lock_file"
         fi
     done
+}
+
+# Función para recuperar archivos huérfanos de procesando/
+# Si el servicio se interrumpió, pueden quedar archivos a medio procesar
+recover_orphaned_files() {
+    local file
+    local filename
+    local recovered=0
+    
+    for file in "$PROCESS_DIR"/*; do
+        [[ -e "$file" ]] || continue
+        [[ -f "$file" ]] || continue
+        filename=$(basename "$file")
+        [[ "$filename" == .* ]] && continue
+        [[ "$filename" == .keep ]] && continue
+        
+        # Eliminar archivos parciales de recodificación
+        if [[ "$filename" == *_recode.mp4 ]]; then
+            echo "$(date): Eliminando archivo parcial de recodificación: $filename"
+            rm -f "$file"
+            continue
+        fi
+        
+        # Devolver archivos originales a entrada/
+        echo "$(date): Recuperando archivo huérfano: $filename -> entrada/"
+        mv "$file" "${INPUT_DIR}/${filename}"
+        recovered=$((recovered + 1))
+    done
+    
+    if [[ $recovered -gt 0 ]]; then
+        echo "$(date): $recovered archivo(s) recuperado(s) de procesando/ a entrada/"
+    fi
 }
 
 # Contar locks activos
@@ -494,6 +551,10 @@ process_file() {
     echo "Monitoreando: ${INPUT_DIR}"
     
     cleanup_stale_locks
+    
+    # Recuperar archivos huérfanos de procesando/ (de ejecuciones interrumpidas)
+    echo "$(date): Verificando archivos huérfanos en procesando/..."
+    recover_orphaned_files
     
     # Escaneo inicial: procesar archivos que ya existen en entrada/
     echo "$(date): Escaneando archivos existentes..."

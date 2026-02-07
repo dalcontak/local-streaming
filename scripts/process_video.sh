@@ -29,6 +29,24 @@ elif [[ "$VIDEO_FILE" == Series/* ]]; then
     SUBFOLDER="Series"
 fi
 
+# Función de limpieza en caso de error
+cleanup_on_error() {
+    echo "ERROR: Proceso interrumpido o fallido para ${JUST_FILENAME}"
+    # Eliminar archivo parcial de recodificación si existe
+    rm -f "${PROCESS_DIR}/${BASE_NAME}_recode.mp4"
+    # Devolver archivo original a entrada/ si sigue en procesando/
+    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+        echo "Devolviendo ${JUST_FILENAME} a entrada/..."
+        if [[ -n "$SUBFOLDER" ]]; then
+            mkdir -p "${INPUT_DIR}/${SUBFOLDER}"
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
+        else
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${JUST_FILENAME}"
+        fi
+        echo "Archivo devuelto a entrada/ para reprocesar"
+    fi
+}
+
 {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
@@ -36,6 +54,9 @@ fi
     if [[ -n "$SUBFOLDER" ]]; then
         echo "Subcarpeta detectada: $SUBFOLDER"
     fi
+    
+    # Activar trap para limpiar en caso de error o interrupción
+    trap cleanup_on_error ERR EXIT
     
     # Mover archivo a procesando/ (siempre en la raíz, sin subcarpeta)
     mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
@@ -111,6 +132,9 @@ fi
     
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    
+    # Desactivar trap - proceso exitoso
+    trap - ERR EXIT
     
     echo "=== Proceso completado ==="
     
