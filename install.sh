@@ -397,13 +397,17 @@ fi
     # Analizar codecs del video
     echo "Analizando codecs del video..."
     VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    AUDIO_STREAMS=$(docker exec ffmpeg ffprobe -v error -select_streams a -show_entries stream=index,codec_name:language -of default=noprint_wrappers=1 "/videos/${JUST_FILENAME}" 2>/dev/null)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
-    echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
+    echo "Pistas de audio detectadas:"
+    echo "$AUDIO_STREAMS"
     
-    # Generar subtítulos con Whisper
-    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL, idioma: $SUBTITLE_LANGUAGE)..."
+    # Detectar idioma del audio (para registro)
+    AUDIO_CODEC=$(echo "$AUDIO_STREAMS" | head -1 | grep -oP 'codec_name=\K\S+')
+    
+    # Generar subtítulos con Whisper (detección automática de idioma)
+    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL, detección automática de idioma)..."
     docker exec whisper python3 -c "
 import whisper
 
@@ -415,7 +419,9 @@ def format_timestamp(seconds):
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 model = whisper.load_model('${WHISPER_MODEL}')
-result = model.transcribe('/videos/${JUST_FILENAME}', language='${SUBTITLE_LANGUAGE}')
+result = model.transcribe('/videos/${JUST_FILENAME}')
+detected_language = result.get('language', 'desconocido')
+print(f'Idioma detectado por Whisper: {detected_language}')
 with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
     for i, segment in enumerate(result['segments']):
         f.write(f'{i+1}\n')
