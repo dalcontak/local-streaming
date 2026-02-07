@@ -242,7 +242,7 @@ EOF
     cat > /tmp/Dockerfile.ffmpeg << 'EOF'
 FROM alpine:latest
 
-RUN apk add --no-cache ffmpeg libva libva-utils libva-intel-driver
+RUN apk add --no-cache ffmpeg
 
 CMD ["sleep", "infinity"]
 EOF
