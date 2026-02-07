@@ -541,7 +541,7 @@ LOCK_DIR="/tmp/streaming_processing"
 # Crear directorio de locks si no existe
 mkdir -p "$LOCK_DIR"
 
-# Función para limpiar locks huérfanos al iniciar
+# Función para limpiar locks huérfanos
 cleanup_stale_locks() {
     for lock_file in "$LOCK_DIR"/*.lock 2>/dev/null; do
         [[ -f "$lock_file" ]] || continue
@@ -552,6 +552,35 @@ cleanup_stale_locks() {
     done
 }
 
+# Función para procesar un archivo respetando el límite de paralelismo
+process_file() {
+    local REL_PATH="$1"
+    local FULL_PATH="${INPUT_DIR}/${REL_PATH}"
+    
+    # Verificar que el archivo existe y no está oculto
+    [[ -f "$FULL_PATH" ]] || return
+    [[ "$(basename "$FULL_PATH")" == .* ]] && return
+    
+    # Esperar si se alcanzó el máximo de procesos paralelos
+    while true; do
+        cleanup_stale_locks
+        ACTIVE_PROCESSES=$(ls "$LOCK_DIR"/*.lock 2>/dev/null | wc -l)
+        [[ $ACTIVE_PROCESSES -lt $MAX_PARALLEL_PROCES ]] && break
+        sleep 2
+    done
+    
+    echo "$(date): Procesando: ${REL_PATH} (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
+    
+    # Procesar archivo en segundo plano con lock gestionado
+    (
+        LOCK_FILE="$LOCK_DIR/$(basename "$FULL_PATH")_$$.lock"
+        echo $$ > "$LOCK_FILE"
+        /opt/streaming/scripts/process_video.sh "${REL_PATH}"
+        rm -f "$LOCK_FILE"
+        echo "$(date): Procesamiento completado para ${REL_PATH}" >> "${LOG_FILE}"
+    ) &
+}
+
 {
     echo "=== Monitor iniciado $(date) ==="
     echo "Procesamiento paralelo máximo: $MAX_PARALLEL_PROCES archivo(s)"
@@ -559,8 +588,22 @@ cleanup_stale_locks() {
     
     cleanup_stale_locks
     
-    # Monitorear recursivamente el directorio principal
-    inotifywait -m -r -e create -e moved_to --format '%w%f' "${INPUT_DIR}" | while read FILE
+    # Escaneo inicial: procesar archivos que ya existen en entrada/
+    echo "$(date): Escaneando archivos existentes..."
+    EXISTING_COUNT=0
+    find "${INPUT_DIR}" -type f ! -name '.*' ! -name '.keep' | sort | while read FULL_PATH; do
+        REL_PATH="${FULL_PATH#${INPUT_DIR}/}"
+        echo "$(date): Archivo existente encontrado: ${REL_PATH}"
+        process_file "${REL_PATH}"
+        EXISTING_COUNT=$((EXISTING_COUNT + 1))
+    done
+    echo "$(date): Escaneo inicial completado. Archivos encontrados: ${EXISTING_COUNT:-0}"
+    
+    # Monitorear recursivamente para archivos nuevos
+    # close_write: se dispara cuando el archivo termina de copiarse
+    # moved_to: se dispara cuando un archivo se mueve al directorio
+    echo "$(date): Iniciando monitoreo continuo..."
+    inotifywait -m -r -e close_write -e moved_to --format '%w%f' "${INPUT_DIR}" | while read FILE
     do
         # Ignorar archivos temporales y directorios
         if [[ ! -f "$FILE" ]]; then
@@ -575,24 +618,8 @@ cleanup_stale_locks() {
         # Obtener ruta relativa desde INPUT_DIR
         REL_PATH="${FILE#${INPUT_DIR}/}"
         
-        # Esperar si se alcanzó el máximo de procesos paralelos
-        while true; do
-            cleanup_stale_locks
-            ACTIVE_PROCESSES=$(ls "$LOCK_DIR"/*.lock 2>/dev/null | wc -l)
-            [[ $ACTIVE_PROCESSES -lt $MAX_PARALLEL_PROCES ]] && break
-            sleep 2
-        done
-        
-        echo "$(date): Nuevo archivo detectado: ${REL_PATH}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
-        
-        # Procesar archivo en segundo plano con lock gestionado
-        (
-            LOCK_FILE="$LOCK_DIR/$(basename "$FILE")_$$.lock"
-            echo $$ > "$LOCK_FILE"
-            /opt/streaming/scripts/process_video.sh "${REL_PATH}"
-            rm -f "$LOCK_FILE"
-            echo "$(date): Procesamiento completado para ${REL_PATH}" >> "${LOG_FILE}"
-        ) &
+        echo "$(date): Nuevo archivo detectado: ${REL_PATH}"
+        process_file "${REL_PATH}"
         
     done
     
