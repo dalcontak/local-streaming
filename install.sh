@@ -217,14 +217,15 @@ create_directory_structure() {
 }
 
 install_whisper_model() {
-    log_info "Descargando modelo medium de Whisper..."
-    
     # Crear directorio de modelos si no existe
     mkdir -p "${WHISPER_MODELS}"
     
-    # Construir imagen Docker personalizada con Whisper para ARM64
-    log_info "Construyendo imagen Docker de Whisper..."
-    cat > /tmp/Dockerfile.whisper << 'EOF'
+    # Verificar si la imagen whisper-arm64 ya existe
+    if docker image inspect whisper-arm64 > /dev/null 2>&1; then
+        log_success "Imagen Docker whisper-arm64 ya existe, omitiendo construcción"
+    else
+        log_info "Construyendo imagen Docker de Whisper..."
+        cat > /tmp/Dockerfile.whisper << 'EOF'
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y ffmpeg
@@ -232,30 +233,37 @@ RUN pip install whisper openai-whisper
 
 CMD ["sleep", "infinity"]
 EOF
+        docker build -t whisper-arm64 /tmp -f /tmp/Dockerfile.whisper
+        log_success "Imagen Docker whisper-arm64 construida"
+    fi
     
-    docker build -t whisper-arm64 /tmp -f /tmp/Dockerfile.whisper
+    # Verificar si el modelo medium ya fue descargado
+    if ls "${WHISPER_MODELS}"/medium.pt > /dev/null 2>&1; then
+        log_success "Modelo medium de Whisper ya existe, omitiendo descarga"
+    else
+        log_info "Descargando modelo medium de Whisper..."
+        docker run --rm \
+            -v "${WHISPER_MODELS}:/root/.cache/whisper" \
+            whisper-arm64 \
+            python -c "import whisper; whisper.load_model('medium')"
+        log_success "Modelo medium de Whisper descargado"
+    fi
     
-    # Descargar modelo
-    docker run --rm \
-        -v "${WHISPER_MODELS}:/root/.cache/whisper" \
-        whisper-arm64 \
-        python -c "import whisper; whisper.load_model('medium')"
-    
-    log_success "Modelo medium de Whisper descargado"
-    
-    # Construir imagen Docker de FFmpeg para ARM64
-    log_info "Construyendo imagen Docker de FFmpeg..."
-    cat > /tmp/Dockerfile.ffmpeg << 'EOF'
+    # Verificar si la imagen ffmpeg-arm64 ya existe
+    if docker image inspect ffmpeg-arm64 > /dev/null 2>&1; then
+        log_success "Imagen Docker ffmpeg-arm64 ya existe, omitiendo construcción"
+    else
+        log_info "Construyendo imagen Docker de FFmpeg..."
+        cat > /tmp/Dockerfile.ffmpeg << 'EOF'
 FROM alpine:latest
 
 RUN apk add --no-cache ffmpeg
 
 CMD ["sleep", "infinity"]
 EOF
-    
-    docker build -t ffmpeg-arm64 /tmp -f /tmp/Dockerfile.ffmpeg
-    
-    log_success "Imagen FFmpeg construida"
+        docker build -t ffmpeg-arm64 /tmp -f /tmp/Dockerfile.ffmpeg
+        log_success "Imagen Docker ffmpeg-arm64 construida"
+    fi
 }
 
 create_docker_compose() {
@@ -282,8 +290,6 @@ services:
     restart: unless-stopped
     environment:
       - TZ=${TZ:-UTC}
-    ports:
-      - 8096:8096/tcp
 
   whisper:
     image: whisper-arm64
@@ -314,8 +320,11 @@ create_processing_scripts() {
     log_info "Creando scripts de procesamiento..."
     
     # Script principal de procesamiento
-    cat > "${SCRIPT_DIR}/process_video.sh" << 'EOF'
+    cat > "${SCRIPT_DIR}/process_video.sh" << 'PROCESS_EOF'
 #!/bin/bash
+
+# Cargar configuración
+source /opt/streaming/scripts/config.sh
 
 VIDEO_FILE="$1"
 if [[ -z "$VIDEO_FILE" ]]; then
@@ -323,7 +332,8 @@ if [[ -z "$VIDEO_FILE" ]]; then
     exit 1
 fi
 
-BASE_NAME=$(basename "$VIDEO_FILE" | sed 's/\.[^.]*$//')
+JUST_FILENAME=$(basename "$VIDEO_FILE")
+BASE_NAME=$(echo "$JUST_FILENAME" | sed 's/\.[^.]*$//')
 EXT="${VIDEO_FILE##*.}"
 
 LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
@@ -342,24 +352,28 @@ fi
 {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
+    echo "Configuración: modelo=$WHISPER_MODEL, idioma=$SUBTITLE_LANGUAGE, codec=$VIDEO_CODEC_TARGET/$AUDIO_CODEC_TARGET, crf=$VIDEO_CRF, preset=$FFMPEG_PRESET"
     if [[ -n "$SUBFOLDER" ]]; then
         echo "Subcarpeta detectada: $SUBFOLDER"
     fi
     
-    # Mover a procesando
-    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
+    # Mover archivo a procesando/ (siempre en la raíz, sin subcarpeta)
+    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
     
-    # Verificar si el video ya tiene subtítulos
+    # A partir de aquí, el archivo está en procesando/nombre.ext
+    # Docker monta procesando:/videos, así que la ruta Docker es /videos/nombre.ext
+    
+    # Verificar si el video ya tiene subtítulos incrustados
     echo "Verificando subtítulos existentes..."
-    HAS_SUBTITLES=$(docker exec ffmpeg ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 "/videos/${VIDEO_FILE}" 2>/dev/null | grep -v '^$')
+    HAS_SUBTITLES=$(docker exec ffmpeg ffprobe -v error -select_streams s -show_entries stream=codec_name -of csv=p=0 "/videos/${JUST_FILENAME}" 2>/dev/null | grep -v '^$')
     
     if [[ -n "$HAS_SUBTITLES" ]]; then
         echo "Video ya tiene subtítulos incrustados. Omitiendo procesamiento."
         if [[ -n "$SUBFOLDER" ]]; then
             mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
         else
-            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
         fi
         echo "=== Video movido a final (sin procesar) ==="
         exit 0
@@ -370,11 +384,11 @@ fi
         echo "Video tiene archivo de subtítulos externo. Omitiendo generación de subtítulos."
         if [[ -n "$SUBFOLDER" ]]; then
             mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
-            mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/${SUBFOLDER}/" 2>/dev/null || true
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
+            mv "${PROCESS_DIR}/${BASE_NAME}".{srt,vtt,ass} "${OUTPUT_DIR}/${SUBFOLDER}/" 2>/dev/null || true
         else
-            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
-            mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/" 2>/dev/null || true
+            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
+            mv "${PROCESS_DIR}/${BASE_NAME}".{srt,vtt,ass} "${OUTPUT_DIR}/" 2>/dev/null || true
         fi
         echo "=== Video movido a final (sin procesar) ==="
         exit 0
@@ -382,46 +396,78 @@ fi
     
     # Analizar codecs del video
     echo "Analizando codecs del video..."
-    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
+    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
     echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
     
     # Generar subtítulos con Whisper
-    echo "Generando subtítulos con Whisper..."
-    docker exec whisper python -c "
+    echo "Generando subtítulos con Whisper (modelo: $WHISPER_MODEL, idioma: $SUBTITLE_LANGUAGE)..."
+    docker exec whisper python3 -c "
 import whisper
-model = whisper.load_model('medium')
-result = model.transcribe('/videos/${VIDEO_FILE}', language='es')
+
+def format_timestamp(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
+
+model = whisper.load_model('${WHISPER_MODEL}')
+result = model.transcribe('/videos/${JUST_FILENAME}', language='${SUBTITLE_LANGUAGE}')
 with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
     for i, segment in enumerate(result['segments']):
         f.write(f'{i+1}\n')
-        f.write(f\"{segment['start']:.3f} --> {segment['end']:.3f}\n\")
-        f.write(f\"{segment['text'].strip()}\n\n\")
+        f.write(f'{format_timestamp(segment[\"start\"])} --> {format_timestamp(segment[\"end\"])}\n')
+        f.write(f'{segment[\"text\"].strip()}\n\n')
 "
     
     # Verificar si necesita recodificación
     NEEDS_RECODE=0
-    if [[ "$VIDEO_CODEC" != "h264" ]]; then
-        echo "Video no es H.264, necesita recodificación"
+    if [[ "$VIDEO_CODEC" != "${VIDEO_CODEC_TARGET}" ]]; then
+        echo "Video no es ${VIDEO_CODEC_TARGET}, necesita recodificación"
         NEEDS_RECODE=1
     fi
     
-    if [[ "$AUDIO_CODEC" != "aac" ]]; then
-        echo "Audio no es AAC, necesita recodificación"
+    if [[ "$AUDIO_CODEC" != "${AUDIO_CODEC_TARGET}" ]]; then
+        echo "Audio no es ${AUDIO_CODEC_TARGET}, necesita recodificación"
         NEEDS_RECODE=1
     fi
     
     if [[ $NEEDS_RECODE -eq 1 ]]; then
-        echo "Recodificando video a H.264 + AAC..."
-        docker exec ffmpeg ffmpeg -i "/videos/${VIDEO_FILE}" \
-            -c:v h264_vaapi -vaapi_device /dev/dri/renderD128 \
-            -preset medium -crf 23 \
-            -c:a aac -b:a 128k \
-            -y \
-            "/videos/${BASE_NAME}_recode.mp4"
-        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${VIDEO_FILE}"
+        echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
+        
+        # Intentar con aceleración hardware (VAAPI), si falla usar libx264
+        VAAPI_OK=0
+        if [[ -e /dev/dri/renderD128 ]]; then
+            echo "Intentando recodificación con VAAPI (aceleración hardware)..."
+            if docker exec ffmpeg ffmpeg -vaapi_device /dev/dri/renderD128 \
+                -i "/videos/${JUST_FILENAME}" \
+                -vf 'format=nv12,hwupload' \
+                -c:v h264_vaapi -qp ${VIDEO_CRF} \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                VAAPI_OK=1
+                echo "Recodificación con VAAPI exitosa"
+            else
+                echo "VAAPI falló, usando libx264 (software)..."
+            fi
+        fi
+        
+        if [[ $VAAPI_OK -eq 0 ]]; then
+            echo "Recodificando con libx264 (software)..."
+            docker exec ffmpeg ffmpeg -i "/videos/${JUST_FILENAME}" \
+                -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4"
+            echo "Recodificación con libx264 completada"
+        fi
+        
+        # Reemplazar archivo original con el recodificado
+        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${JUST_FILENAME}"
     else
         echo "Video ya tiene buenos codecs, sin recodificar"
     fi
@@ -430,21 +476,21 @@ with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
     echo "Moviendo video y subtítulos a final..."
     if [[ -n "$SUBFOLDER" ]]; then
         mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
+        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
         mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${SUBFOLDER}/${BASE_NAME}.srt" 2>/dev/null || true
     else
-        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
         mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
     fi
     
     # Limpiar archivos temporales
-    rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
+    rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
     rm -f "${PROCESS_DIR}/${BASE_NAME}.srt"
     
     echo "=== Proceso completado (subtítulos generados) ==="
     
 } >> "${LOG_FILE}" 2>&1
-EOF
+PROCESS_EOF
 
     chmod +x "${SCRIPT_DIR}/process_video.sh"
     
@@ -495,10 +541,23 @@ LOCK_DIR="/tmp/streaming_processing"
 # Crear directorio de locks si no existe
 mkdir -p "$LOCK_DIR"
 
+# Función para limpiar locks huérfanos al iniciar
+cleanup_stale_locks() {
+    for lock_file in "$LOCK_DIR"/*.lock 2>/dev/null; do
+        [[ -f "$lock_file" ]] || continue
+        PID=$(cat "$lock_file" 2>/dev/null)
+        if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then
+            rm -f "$lock_file"
+        fi
+    done
+}
+
 {
     echo "=== Monitor iniciado $(date) ==="
     echo "Procesamiento paralelo máximo: $MAX_PARALLEL_PROCES archivo(s)"
     echo "Monitoreando: ${INPUT_DIR}"
+    
+    cleanup_stale_locks
     
     # Monitorear recursivamente el directorio principal
     inotifywait -m -r -e create -e moved_to --format '%w%f' "${INPUT_DIR}" | while read FILE
@@ -509,33 +568,32 @@ mkdir -p "$LOCK_DIR"
         fi
         
         # Ignorar archivos ocultos
-        if [[ "$(basename $FILE)" == .* ]]; then
+        if [[ "$(basename "$FILE")" == .* ]]; then
             continue
         fi
         
         # Obtener ruta relativa desde INPUT_DIR
         REL_PATH="${FILE#${INPUT_DIR}/}"
         
-        # Contar procesos activos
-        ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
-        
         # Esperar si se alcanzó el máximo de procesos paralelos
-        while [[ $ACTIVE_PROCESSES -ge $MAX_PARALLEL_PROCES ]]; do
+        while true; do
+            cleanup_stale_locks
+            ACTIVE_PROCESSES=$(ls "$LOCK_DIR"/*.lock 2>/dev/null | wc -l)
+            [[ $ACTIVE_PROCESSES -lt $MAX_PARALLEL_PROCES ]] && break
             sleep 2
-            ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
         done
         
-        # Crear lock único para este archivo
-        LOCK_FILE="$LOCK_DIR/$(basename $FILE)_$$.lock"
-        touch "$LOCK_FILE"
         echo "$(date): Nuevo archivo detectado: ${REL_PATH}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
         
-        # Procesar archivo en segundo plano
-        /opt/streaming/scripts/process_video.sh "${REL_PATH}" &
+        # Procesar archivo en segundo plano con lock gestionado
+        (
+            LOCK_FILE="$LOCK_DIR/$(basename "$FILE")_$$.lock"
+            echo $$ > "$LOCK_FILE"
+            /opt/streaming/scripts/process_video.sh "${REL_PATH}"
+            rm -f "$LOCK_FILE"
+            echo "$(date): Procesamiento completado para ${REL_PATH}" >> "${LOG_FILE}"
+        ) &
         
-        # Eliminar lock cuando termine el proceso en segundo plano
-        wait $! && rm -f "$LOCK_FILE"
-        echo "$(date): Procesamiento completado para ${REL_PATH}"
     done
     
 } >> "${LOG_FILE}" 2>&1

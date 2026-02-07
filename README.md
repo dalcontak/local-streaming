@@ -314,20 +314,23 @@ sudo reboot
 
 ## Configuración NFS (Opcional)
 
-Si prefieres montar la carpeta de videos via NFS:
+Si prefieres montar las carpetas de videos via NFS:
 
 ```bash
-# Crear punto de montaje
-sudo mkdir -p /mnt/nfs/videos
+# Crear puntos de montaje
+sudo mkdir -p /mnt/nfs/peliculas
+sudo mkdir -p /mnt/nfs/series
 
 # Agregar a /etc/fstab
-echo "<SERVER_IP>:/path/to/videos /mnt/nfs/videos nfs defaults 0 0" | sudo tee -a /etc/fstab
+echo "<SERVER_IP>:/path/to/peliculas /mnt/nfs/peliculas nfs defaults 0 0" | sudo tee -a /etc/fstab
+echo "<SERVER_IP>:/path/to/series /mnt/nfs/series nfs defaults 0 0" | sudo tee -a /etc/fstab
 
 # Montar
 sudo mount -a
 
-# Crear symlink
-sudo ln -s /mnt/nfs/videos /opt/streaming/entrada
+# Crear symlinks a las carpetas de entrada
+sudo ln -sf /mnt/nfs/peliculas /opt/streaming/entrada/Peliculas
+sudo ln -sf /mnt/nfs/series /opt/streaming/entrada/Series
 ```
 
 ## Rendimiento y Optimización
@@ -335,9 +338,9 @@ sudo ln -s /mnt/nfs/videos /opt/streaming/entrada
 ### Recomendaciones para Orange Pi 5 Plus
 
 - **Modelo Whisper**: `medium` (balance calidad/velocidad)
-- **CRF FFmpeg**: `23` (calidad buena sin牺牲 velocidad)
+- **CRF FFmpeg**: `23` (calidad buena sin sacrificar velocidad)
 - **Preset FFmpeg**: `medium`
-- **Concurrent processing**: Evitar procesar múltiples videos simultáneamente
+- **Concurrent processing**: Evitar procesar más de 1-2 videos simultáneamente en 4GB RAM
 
 ### Monitorear Recursos
 
@@ -404,7 +407,6 @@ sudo reboot
 
 - **Jellyfin**: https://jellyfin.org/docs/
 - **Whisper**: https://github.com/openai/whisper
-- **Whisper.cpp**: https://github.com/ggml-org/whisper.cpp
 - **FFmpeg**: https://ffmpeg.org/documentation.html
 - **Docker**: https://docs.docker.com/
 
@@ -414,7 +416,6 @@ Este sistema utiliza software open-source:
 
 - Jellyfin: GPL v2.0
 - Whisper: MIT License
-- Whisper.cpp: MIT License
 - FFmpeg: GPL/LGPL
 - Docker: Apache 2.0
 

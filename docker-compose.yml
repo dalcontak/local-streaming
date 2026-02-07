@@ -1,4 +1,5 @@
-version: '3.8'
+# NOTA: Este archivo es de referencia. El install.sh genera uno actualizado
+# en /opt/streaming/docker-compose.yml con las rutas correctas del sistema.
 
 services:
   jellyfin:
@@ -18,20 +19,18 @@ services:
     restart: unless-stopped
     environment:
       - TZ=America/Mexico_City
-    ports:
-      - 8096:8096/tcp
 
   whisper:
-    image: ghcr.io/ggml-org/whisper.cpp:main
+    image: whisper-arm64
     container_name: whisper
     volumes:
-      - /opt/streaming/data/whisper/models:/models
+      - /opt/streaming/data/whisper/models:/root/.cache/whisper
       - /opt/streaming/procesando:/videos
     restart: unless-stopped
-    command: tail -f /dev/null
+    command: sleep infinity
 
   ffmpeg:
-    image: linuxserver/ffmpeg:latest
+    image: ffmpeg-arm64
     container_name: ffmpeg
     devices:
       - /dev/dri/renderD128:/dev/dri/renderD128
@@ -40,4 +39,4 @@ services:
       - /opt/streaming/procesando:/videos
       - /opt/streaming/final:/output
     restart: unless-stopped
-    command: tail -f /dev/null
+    command: sleep infinity
