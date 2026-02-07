@@ -105,26 +105,71 @@ docker logs ffmpeg
 
 ## Configuración Avanzada
 
-### Modificar Idioma de Subtítulos Predeterminado
+### Configuración General
 
-Editar `/opt/streaming/scripts/process_video.sh`:
+Editar `/opt/streaming/scripts/config.sh`:
+
 ```bash
-LANGUAGE="${2:-es}"  # Cambiar 'es' por tu idioma preferido
+# Número máximo de procesos paralelos (1 = secuencial, 2+ = paralelo)
+MAX_PARALLEL_PROCES=1
+
+# Idioma de subtítulos (es, en, fr, de, etc.)
+SUBTITLE_LANGUAGE="es"
+
+# Modelo de Whisper (tiny, base, small, medium, large)
+WHISPER_MODEL="medium"
+
+# Codec objetivo (h264, h265)
+VIDEO_CODEC_TARGET="h264"
+AUDIO_CODEC_TARGET="aac"
+
+# Calidad de video (menor = mejor calidad)
+VIDEO_CRF=23
+
+# Preset FFmpeg
+FFMPEG_PRESET="medium"
 ```
 
-### Ajustar Calidad de Video
+**Importante**: Después de modificar la configuración, reinicia el servicio de monitoreo:
 
-Editar `/opt/streaming/scripts/process_video.sh`:
 ```bash
--crf 23              # Menor número = mejor calidad (18-28)
--preset medium       # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+systemctl restart streaming-monitor.service
+```
+
+### Ajustar Procesamiento Paralelo
+
+Para procesar múltiples videos simultáneamente, edita `/opt/streaming/scripts/config.sh`:
+
+```bash
+MAX_PARALLEL_PROCES=2  # Procesar hasta 2 videos al mismo tiempo
+```
+
+**Recomendaciones para Orange Pi 5 Plus**:
+- **4GB RAM**: 1 proceso (secuencial)
+- **8GB+ RAM**: 2-3 procesos (paralelo)
+
+### Modificar Idioma de Subtítulos
+
+Editar `/opt/streaming/scripts/config.sh`:
+```bash
+SUBTITLE_LANGUAGE="es"  # Cambiar a tu idioma preferido
 ```
 
 ### Cambiar Modelo de Whisper
 
-Editar `/opt/streaming/scripts/process_video.sh`:
-```python
-model = whisper.load_model('medium')  # Opciones: base, small, medium, large
+Editar `/opt/streaming/scripts/config.sh`:
+```bash
+WHISPER_MODEL="medium"  # Opciones: tiny, base, small, medium, large
+```
+
+Más información sobre modelos: https://github.com/openai/whisper
+
+### Ajustar Calidad de Video
+
+Editar `/opt/streaming/scripts/config.sh`:
+```bash
+VIDEO_CRF=23              # Menor número = mejor calidad (18-28)
+FFMPEG_PRESET="medium"   # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 ```
 
 ### Configurar Zona Horaria

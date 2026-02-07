@@ -400,34 +400,79 @@ EOF
 
     chmod +x "${SCRIPT_DIR}/process_video.sh"
     
+    # Crear archivo de configuración
+    cat > "${SCRIPT_DIR}/config.sh" << 'EOF'
+#!/bin/bash
+# Configuración del sistema de streaming
+
+# Número máximo de procesos paralelos para procesamiento de videos
+# 1 = secuencial (recomendado para Orange Pi 5 Plus)
+# 2-3 = paralelo (si tienes más RAM/CPU)
+MAX_PARALLEL_PROCES=1
+
+# Idioma predeterminado para subtítulos (es, en, fr, de, etc.)
+SUBTITLE_LANGUAGE="es"
+
+# Modelo de Whisper: tiny, base, small, medium, large
+WHISPER_MODEL="medium"
+
+# Codec de video para recodificación: h264, h265
+VIDEO_CODEC_TARGET="h264"
+
+# Codec de audio para recodificación: aac, opus
+AUDIO_CODEC_TARGET="aac"
+
+# Calidad de video para recodificación (CRF): menor = mejor calidad
+# H.264: 18-28 (23 recomendado)
+# H.265: 20-32 (26 recomendado)
+VIDEO_CRF=23
+
+# Preset de FFmpeg: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+FFMPEG_PRESET="medium"
+EOF
+
+    chmod +x "${SCRIPT_DIR}/config.sh"
+    
     # Script de monitoreo
     cat > "${SCRIPT_DIR}/monitor.sh" << 'EOF'
 #!/bin/bash
 
+# Cargar configuración
+source /opt/streaming/scripts/config.sh
+
 INPUT_DIR="/opt/streaming/entrada"
 LOG_FILE="/opt/streaming/logs/monitor.log"
-LOCK_FILE="/tmp/streaming_processing.lock"
+LOCK_DIR="/tmp/streaming_processing"
+
+# Crear directorio de locks si no existe
+mkdir -p "$LOCK_DIR"
 
 {
     echo "=== Monitor iniciado $(date) ==="
+    echo "Procesamiento paralelo máximo: $MAX_PARALLEL_PROCES archivo(s)"
     
     inotifywait -m -e create -e moved_to --format '%f' "${INPUT_DIR}" | while read FILE
     do
         if [[ -f "${INPUT_DIR}/${FILE}" ]]; then
-            # Esperar si ya hay un proceso en ejecución
-            while [[ -f "$LOCK_FILE" ]]; do
+            # Contar procesos activos
+            ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
+            
+            # Esperar si se alcanzó el máximo de procesos paralelos
+            while [[ $ACTIVE_PROCESSES -ge $MAX_PARALLEL_PROCES ]]; do
                 sleep 2
+                ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
             done
             
-            # Crear lock
+            # Crear lock único para este archivo
+            LOCK_FILE="$LOCK_DIR/${FILE}_$$.lock"
             touch "$LOCK_FILE"
-            echo "$(date): Nuevo archivo detectado: ${FILE}, iniciando procesamiento..."
+            echo "$(date): Nuevo archivo detectado: ${FILE}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
             
-            # Procesar archivo
-            /opt/streaming/scripts/process_video.sh "${FILE}"
+            # Procesar archivo en segundo plano
+            /opt/streaming/scripts/process_video.sh "${FILE}" &
             
-            # Eliminar lock
-            rm -f "$LOCK_FILE"
+            # Eliminar lock cuando termine el proceso en segundo plano
+            wait $! && rm -f "$LOCK_FILE"
             echo "$(date): Procesamiento completado para ${FILE}"
         fi
     done
