@@ -697,7 +697,8 @@ start_services() {
         return 1
     fi
     
-    systemctl start streaming-monitor.service
+    # Reiniciar (no solo start) para que tome los scripts actualizados
+    systemctl restart streaming-monitor.service
     
     log_success "Todos los servicios iniciados"
 }
