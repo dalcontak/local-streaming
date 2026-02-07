@@ -543,13 +543,24 @@ mkdir -p "$LOCK_DIR"
 
 # Función para limpiar locks huérfanos
 cleanup_stale_locks() {
-    for lock_file in "$LOCK_DIR"/*.lock 2>/dev/null; do
-        [[ -f "$lock_file" ]] || continue
+    local lock_file
+    for lock_file in "$LOCK_DIR"/*.lock; do
+        [[ -e "$lock_file" ]] || continue
         PID=$(cat "$lock_file" 2>/dev/null)
         if [[ -n "$PID" ]] && ! kill -0 "$PID" 2>/dev/null; then
             rm -f "$lock_file"
         fi
     done
+}
+
+# Contar locks activos
+count_active_locks() {
+    local count=0
+    local lock_file
+    for lock_file in "$LOCK_DIR"/*.lock; do
+        [[ -e "$lock_file" ]] && count=$((count + 1))
+    done
+    echo "$count"
 }
 
 # Función para procesar un archivo respetando el límite de paralelismo
@@ -564,7 +575,7 @@ process_file() {
     # Esperar si se alcanzó el máximo de procesos paralelos
     while true; do
         cleanup_stale_locks
-        ACTIVE_PROCESSES=$(ls "$LOCK_DIR"/*.lock 2>/dev/null | wc -l)
+        ACTIVE_PROCESSES=$(count_active_locks)
         [[ $ACTIVE_PROCESSES -lt $MAX_PARALLEL_PROCES ]] && break
         sleep 2
     done
