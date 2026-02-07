@@ -406,6 +406,7 @@ EOF
 
 INPUT_DIR="/opt/streaming/entrada"
 LOG_FILE="/opt/streaming/logs/monitor.log"
+LOCK_FILE="/tmp/streaming_processing.lock"
 
 {
     echo "=== Monitor iniciado $(date) ==="
@@ -413,8 +414,21 @@ LOG_FILE="/opt/streaming/logs/monitor.log"
     inotifywait -m -e create -e moved_to --format '%f' "${INPUT_DIR}" | while read FILE
     do
         if [[ -f "${INPUT_DIR}/${FILE}" ]]; then
-            echo "$(date): Nuevo archivo detectado: ${FILE}"
+            # Esperar si ya hay un proceso en ejecución
+            while [[ -f "$LOCK_FILE" ]]; do
+                sleep 2
+            done
+            
+            # Crear lock
+            touch "$LOCK_FILE"
+            echo "$(date): Nuevo archivo detectado: ${FILE}, iniciando procesamiento..."
+            
+            # Procesar archivo
             /opt/streaming/scripts/process_video.sh "${FILE}"
+            
+            # Eliminar lock
+            rm -f "$LOCK_FILE"
+            echo "$(date): Procesamiento completado para ${FILE}"
         fi
     done
     
