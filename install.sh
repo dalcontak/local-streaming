@@ -197,6 +197,12 @@ create_directory_structure() {
     mkdir -p "${JELLYFIN_CACHE}"
     mkdir -p "${WHISPER_MODELS}"
     
+    # Crear subcarpetas para clasificación
+    mkdir -p "${VIDEO_INPUT}/Peliculas"
+    mkdir -p "${VIDEO_INPUT}/Series"
+    mkdir -p "${VIDEO_OUTPUT}/Peliculas"
+    mkdir -p "${VIDEO_OUTPUT}/Series"
+    
     # Crear archivo .keep en directorios vacíos
     touch "${VIDEO_INPUT}/.keep"
     touch "${VIDEO_PROCESS}/.keep"
@@ -325,9 +331,20 @@ INPUT_DIR="/opt/streaming/entrada"
 PROCESS_DIR="/opt/streaming/procesando"
 OUTPUT_DIR="/opt/streaming/final"
 
+# Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
+SUBFOLDER=""
+if [[ "$VIDEO_FILE" == Peliculas/* ]]; then
+    SUBFOLDER="Peliculas"
+elif [[ "$VIDEO_FILE" == Series/* ]]; then
+    SUBFOLDER="Series"
+fi
+
 {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
+    if [[ -n "$SUBFOLDER" ]]; then
+        echo "Subcarpeta detectada: $SUBFOLDER"
+    fi
     
     # Mover a procesando
     mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
@@ -338,7 +355,12 @@ OUTPUT_DIR="/opt/streaming/final"
     
     if [[ -n "$HAS_SUBTITLES" ]]; then
         echo "Video ya tiene subtítulos incrustados. Omitiendo procesamiento."
-        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        if [[ -n "$SUBFOLDER" ]]; then
+            mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
+            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
+        else
+            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        fi
         echo "=== Video movido a final (sin procesar) ==="
         exit 0
     fi
@@ -346,8 +368,14 @@ OUTPUT_DIR="/opt/streaming/final"
     # Verificar si existe archivo de subtítulos externo
     if [[ -f "${PROCESS_DIR}/${BASE_NAME}.srt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.vtt" ]] || [[ -f "${PROCESS_DIR}/${BASE_NAME}.ass" ]]; then
         echo "Video tiene archivo de subtítulos externo. Omitiendo generación de subtítulos."
-        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
-        mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/" 2>/dev/null || true
+        if [[ -n "$SUBFOLDER" ]]; then
+            mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
+            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
+            mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/${SUBFOLDER}/" 2>/dev/null || true
+        else
+            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+            mv "${PROCESS_DIR}/${BASE_NAME}".* "${OUTPUT_DIR}/" 2>/dev/null || true
+        fi
         echo "=== Video movido a final (sin procesar) ==="
         exit 0
     fi
@@ -400,8 +428,14 @@ with open('/videos/${BASE_NAME}.srt', 'w', encoding='utf-8') as f:
     
     # Mover video y subtítulos a final
     echo "Moviendo video y subtítulos a final..."
-    mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
-    mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
+    if [[ -n "$SUBFOLDER" ]]; then
+        mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${SUBFOLDER}/$(basename ${VIDEO_FILE})"
+        mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${SUBFOLDER}/${BASE_NAME}.srt" 2>/dev/null || true
+    else
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${OUTPUT_DIR}/${VIDEO_FILE}"
+        mv "${PROCESS_DIR}/${BASE_NAME}.srt" "${OUTPUT_DIR}/${BASE_NAME}.srt" 2>/dev/null || true
+    fi
     
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
@@ -465,9 +499,16 @@ mkdir -p "$LOCK_DIR"
     echo "=== Monitor iniciado $(date) ==="
     echo "Procesamiento paralelo máximo: $MAX_PARALLEL_PROCES archivo(s)"
     
-    inotifywait -m -e create -e moved_to --format '%f' "${INPUT_DIR}" | while read FILE
+    # Monitorear directorio principal y subcarpetas
+    inotifywait -m -e create -e moved_to --format '%w%f' \
+        "${INPUT_DIR}" \
+        "${INPUT_DIR}/Peliculas" \
+        "${INPUT_DIR}/Series" | while read FILE
     do
-        if [[ -f "${INPUT_DIR}/${FILE}" ]]; then
+        if [[ -f "$FILE" ]]; then
+            # Obtener ruta relativa desde INPUT_DIR
+            REL_PATH="${FILE#${INPUT_DIR}/}"
+            
             # Contar procesos activos
             ACTIVE_PROCESSES=$(ls "$LOCK_DIR" 2>/dev/null | wc -l)
             
@@ -478,16 +519,16 @@ mkdir -p "$LOCK_DIR"
             done
             
             # Crear lock único para este archivo
-            LOCK_FILE="$LOCK_DIR/${FILE}_$$.lock"
+            LOCK_FILE="$LOCK_DIR/$(basename $FILE)_$$.lock"
             touch "$LOCK_FILE"
-            echo "$(date): Nuevo archivo detectado: ${FILE}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
+            echo "$(date): Nuevo archivo detectado: ${REL_PATH}, iniciando procesamiento (activos: $((ACTIVE_PROCESSES + 1))/$MAX_PARALLEL_PROCES)..."
             
             # Procesar archivo en segundo plano
-            /opt/streaming/scripts/process_video.sh "${FILE}" &
+            /opt/streaming/scripts/process_video.sh "${REL_PATH}" &
             
             # Eliminar lock cuando termine el proceso en segundo plano
             wait $! && rm -f "$LOCK_FILE"
-            echo "$(date): Procesamiento completado para ${FILE}"
+            echo "$(date): Procesamiento completado para ${REL_PATH}"
         fi
     done
     

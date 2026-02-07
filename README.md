@@ -28,28 +28,45 @@ Sistema de streaming local automatizado con generación de subtítulos mediante 
    ```
 
 3. **Configurar Jellyfin:**
-   - Acceder a `http://<IP-ORANGEPI>:8096`
-   - Completar configuración inicial
-   - Crear biblioteca apuntando a `/media`
-   - Instalar plugins: Open Subtitles, Subtitle Extract
+    - Acceder a `http://<IP-ORANGEPI>:8096`
+    - Completar configuración inicial
+    - Crear biblioteca de **Películas** apuntando a `/media/Peliculas`
+    - Crear biblioteca de **Series** apuntando a `/media/Series`
+    - Instalar plugins: Open Subtitles, Subtitle Extract
 
 ## Uso Básico
 
 ### Agregar Videos al Sistema
 
-1. **Método 1: Copiar archivos (Automático)**
-   ```bash
-   cp /ruta/a/video.mp4 /opt/streaming/entrada/
-   ```
-   El sistema detectará automáticamente y procesará el video.
+El sistema clasifica automáticamente las películas y series según la carpeta de origen:
 
-2. **Método 2: Procesamiento manual**
-   ```bash
-   /opt/streaming/scripts/process_video.sh video.mp4 [idioma]
-   ```
+1. **Para Películas**: Copiar a `/opt/streaming/entrada/Peliculas/`
+    ```bash
+    cp /ruta/a/pelicula.mp4 /opt/streaming/entrada/Peliculas/
+    ```
+    El resultado aparecerá en `/media/Peliculas/` en Jellyfin.
 
-3. **Método 3: Via NFS**
-   Configurar cliente NFS montando la carpeta compartida en `/opt/streaming/entrada`.
+2. **Para Series**: Copiar a `/opt/streaming/entrada/Series/`
+    ```bash
+    cp /ruta/a/episodio.mp4 /opt/streaming/entrada/Series/
+    ```
+    El resultado aparecerá en `/media/Series/` en Jellyfin.
+
+**Nota**: El sistema detecta automáticamente y procesa los videos en ambas carpetas.
+
+3. **Procesamiento manual**
+    ```bash
+    # Para película
+    /opt/streaming/scripts/process_video.sh "Peliculas/nombre_pelicula.mp4"
+    
+    # Para serie
+    /opt/streaming/scripts/process_video.sh "Series/S01E01_episodio.mp4"
+    ```
+
+4. **Via NFS**
+    Configurar cliente NFS montando las carpetas compartidas:
+    - `/mnt/nfs/peliculas` → `/opt/streaming/entrada/Peliculas`
+    - `/mnt/nfs/series` → `/opt/streaming/entrada/Series`
 
 ### Ver Progreso del Procesamiento
 
@@ -88,19 +105,23 @@ docker logs ffmpeg
 ```
 /opt/streaming/
 ├── entrada/              # Videos a procesar (input)
+│   ├── Peliculas/       # Carpeta para películas
+│   └── Series/          # Carpeta para series
 ├── procesando/          # Videos en proceso de transcodificación
 ├── final/               # Videos procesados (input para Jellyfin)
+│   ├── Peliculas/       # Películas procesadas
+│   └── Series/          # Series procesadas
 ├── scripts/             # Scripts de automatización
+│   ├── config.sh        # Configuración del sistema
 │   ├── process_video.sh # Procesamiento individual
-│   ├── monitor.sh       # Monitoreo continuo
-│   └── configure_jellyfin.sh # Configuración Jellyfin
+│   └── monitor.sh       # Monitoreo continuo
 ├── configs/             # Configuraciones
 │   └── jellyfin/        # Configuración Jellyfin
 ├── data/                # Datos
 │   ├── jellyfin/cache/  # Cache Jellyfin
 │   └── whisper/models/  # Modelos Whisper
 ├── logs/                # Logs del sistema
-└── docker compose.yml   # Configuración Docker
+└── docker-compose.yml   # Configuración Docker
 ```
 
 ## Configuración Avanzada
