@@ -224,7 +224,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y ffmpeg
 RUN pip install whisper openai-whisper
 
-CMD ["tail", "-f", "/dev/null"]
+CMD ["sleep", "infinity"]
 EOF
     
     docker build -t whisper-arm64 /tmp -f /tmp/Dockerfile.whisper
@@ -236,6 +236,20 @@ EOF
         python -c "import whisper; whisper.load_model('medium')"
     
     log_success "Modelo medium de Whisper descargado"
+    
+    # Construir imagen Docker de FFmpeg para ARM64
+    log_info "Construyendo imagen Docker de FFmpeg..."
+    cat > /tmp/Dockerfile.ffmpeg << 'EOF'
+FROM alpine:latest
+
+RUN apk add --no-cache ffmpeg libva libva-utils libva-intel-driver
+
+CMD ["sleep", "infinity"]
+EOF
+    
+    docker build -t ffmpeg-arm64 /tmp -f /tmp/Dockerfile.ffmpeg
+    
+    log_success "Imagen FFmpeg construida"
 }
 
 create_docker_compose() {
@@ -275,7 +289,7 @@ services:
     command: /bin/sh -c "sleep infinity"
 
   ffmpeg:
-    image: linuxserver/ffmpeg:latest
+    image: ffmpeg-arm64
     container_name: ffmpeg
     devices:
       - /dev/dri/renderD128:/dev/dri/renderD128
@@ -284,7 +298,7 @@ services:
       - ${VIDEO_PROCESS}:/videos
       - ${VIDEO_OUTPUT}:/output
     restart: unless-stopped
-    command: /bin/sh -c "sleep infinity"
+    command: sleep infinity
 EOF
 
     log_success "Archivo docker-compose.yml creado"
