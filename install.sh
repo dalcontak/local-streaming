@@ -272,7 +272,7 @@ services:
       - ${WHISPER_MODELS}:/root/.cache/whisper
       - ${VIDEO_PROCESS}:/videos
     restart: unless-stopped
-    command: tail -f /dev/null
+    command: /bin/sh -c "sleep infinity"
 
   ffmpeg:
     image: linuxserver/ffmpeg:latest
@@ -284,7 +284,7 @@ services:
       - ${VIDEO_PROCESS}:/videos
       - ${VIDEO_OUTPUT}:/output
     restart: unless-stopped
-    command: tail -f /dev/null
+    command: /bin/sh -c "sleep infinity"
 EOF
 
     log_success "Archivo docker-compose.yml creado"
