@@ -7,10 +7,16 @@ Sistema de streaming local automatizado con recodificación de video, ejecutado 
 ## Arquitectura
 
 ```
-[Usuario] → Copia video → [entrada/] → [Automatización] → [procesando/] → [final/] → [Jellyfin]
-                                                 ↓
-                                             [FFmpeg]
+[Usuario] → Copia video → [entrada/] → [Monitor] → [procesando/] → [final/] → [Jellyfin]
+                                            ↓
+                                    [FFmpeg (RKMPP)]
+                                   (dentro de Jellyfin)
 ```
+
+Un solo contenedor Docker (`jellyfin/jellyfin:latest`) que incluye:
+- Jellyfin como servidor de media
+- FFmpeg con aceleración hardware RKMPP para Rockchip RK3588
+- Fallback automático a libx264 (software) si RKMPP no está disponible
 
 ## Instalación Rápida
 
@@ -135,7 +141,6 @@ docker compose up -d
 
 # Ver logs de contenedores
 docker logs jellyfin
-docker logs ffmpeg
 ```
 
 ## Directorios del Sistema
@@ -266,17 +271,20 @@ docker compose restart jellyfin
 ### FFmpeg falla al recodificar
 
 ```bash
-# Verificar dispositivo DRI
-ls -la /dev/dri/
+# Verificar dispositivos RKMPP
+ls -la /dev/dri/ /dev/mpp_service /dev/rga /dev/dma_heap
 
 # Verificar grupo render
 getent group render
 
-# Ver logs de FFmpeg
-docker logs ffmpeg
+# Verificar que RKMPP está disponible
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp
 
-# Probar recodificación manual
-docker exec ffmpeg ffmpeg -hwaccels
+# Probar recodificación manual con RKMPP
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hwaccel rkmpp -hwaccel_output_format drm_prime -i /videos/test.mp4 -c:v h264_rkmpp -y /videos/test_out.mp4
+
+# Si RKMPP no funciona, verificar kernel (requiere BSP 5.10/6.1)
+uname -r
 ```
 
 ### Videos no se procesan automáticamente
@@ -295,8 +303,11 @@ systemctl restart streaming-monitor
 ### Aceleración Hardware No Disponible
 
 ```bash
-# Verificar dispositivos DRI
-ls -la /dev/dri/
+# Verificar dispositivos RKMPP (Rockchip)
+ls -la /dev/dri/ /dev/mpp_service /dev/rga /dev/dma_heap
+
+# Verificar kernel (RKMPP requiere BSP kernel 5.10 o 6.1)
+uname -r
 
 # Verificar grupos
 groups $(whoami)
@@ -304,6 +315,10 @@ groups $(whoami)
 # Agregar usuario a grupos
 sudo usermod -aG docker,render,video $(whoami)
 
+# Verificar encoders RKMPP disponibles
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp
+
+# Si RKMPP no funciona, el sistema usa libx264 (software) automáticamente
 # Re-iniciar sesión o reiniciar
 sudo reboot
 ```
@@ -418,6 +433,6 @@ Para mejoras o reporte de bugs, por favor utiliza el sistema de tickets del proy
 
 ---
 
-**Versión**: 1.1
-**Fecha**: 2026-02-07
+**Versión**: 1.2
+**Fecha**: 2026-02-09
 **Desarrollado para**: Orange Pi 5 Plus con Armbian

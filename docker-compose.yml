@@ -9,25 +9,17 @@ services:
     group_add:
       - '122'  # Render group ID (ajustar según sistema)
     devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mali0:/dev/mali0
+      - /dev/rga:/dev/rga
+      - /dev/mpp_service:/dev/mpp_service
     volumes:
       - /opt/streaming/configs/jellyfin:/config
       - /opt/streaming/data/jellyfin/cache:/cache
       - /opt/streaming/final:/media
+      - /opt/streaming/procesando:/videos
     network_mode: host
     restart: unless-stopped
     environment:
       - TZ=America/Mexico_City
-
-  ffmpeg:
-    image: ffmpeg-arm64
-    container_name: ffmpeg
-    devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-      - /dev/dri/card0:/dev/dri/card0
-    volumes:
-      - /opt/streaming/procesando:/videos
-      - /opt/streaming/final:/output
-    restart: unless-stopped
-    command: sleep infinity

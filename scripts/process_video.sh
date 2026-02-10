@@ -21,6 +21,11 @@ INPUT_DIR="/opt/streaming/entrada"
 PROCESS_DIR="/opt/streaming/procesando"
 OUTPUT_DIR="/opt/streaming/final"
 
+# Rutas de ffmpeg/ffprobe dentro del contenedor Jellyfin
+FFMPEG_BIN="/usr/lib/jellyfin-ffmpeg/ffmpeg"
+FFPROBE_BIN="/usr/lib/jellyfin-ffmpeg/ffprobe"
+DOCKER_CONTAINER="jellyfin"
+
 # Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
 SUBFOLDER=""
 if [[ "$VIDEO_FILE" == Peliculas/* ]]; then
@@ -66,8 +71,8 @@ cleanup_on_error() {
     
     # Analizar codecs del video
     echo "Analizando codecs del video..."
-    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
     echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
@@ -87,27 +92,28 @@ cleanup_on_error() {
     if [[ $NEEDS_RECODE -eq 1 ]]; then
         echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
         
-        # Intentar con aceleración hardware (VAAPI), si falla usar libx264
-        VAAPI_OK=0
-        if [[ -e /dev/dri/renderD128 ]]; then
-            echo "Intentando recodificación con VAAPI (aceleración hardware)..."
-            if docker exec ffmpeg ffmpeg -vaapi_device /dev/dri/renderD128 \
+        # Intentar con aceleración hardware RKMPP (Rockchip), si falla usar libx264
+        RKMPP_OK=0
+        if [[ -e /dev/mpp_service ]]; then
+            echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime -afbc rga \
                 -i "/videos/${JUST_FILENAME}" \
-                -vf 'format=nv12,hwupload' \
-                -c:v h264_vaapi -qp ${VIDEO_CRF} \
+                -vf 'scale_rkrga=format=nv12' \
+                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
                 "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                VAAPI_OK=1
-                echo "Recodificación con VAAPI exitosa"
+                RKMPP_OK=1
+                echo "Recodificación con RKMPP exitosa"
             else
-                echo "VAAPI falló, usando libx264 (software)..."
+                echo "RKMPP falló, usando libx264 (software)..."
             fi
         fi
         
-        if [[ $VAAPI_OK -eq 0 ]]; then
+        if [[ $RKMPP_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
-            docker exec ffmpeg ffmpeg -i "/videos/${JUST_FILENAME}" \
+            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \

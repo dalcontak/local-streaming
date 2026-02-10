@@ -214,21 +214,24 @@ create_directory_structure() {
     log_success "Estructura de directorios creada en ${BASE_DIR}"
 }
 
-build_docker_images() {
-    # Verificar si la imagen ffmpeg-arm64 ya existe
-    if docker image inspect ffmpeg-arm64 > /dev/null 2>&1; then
-        log_success "Imagen Docker ffmpeg-arm64 ya existe, omitiendo construcción"
+pull_docker_images() {
+    log_info "Descargando imagen Docker de Jellyfin..."
+    
+    # Usar la imagen oficial de Jellyfin que incluye ffmpeg con RKMPP
+    if docker image inspect jellyfin/jellyfin:latest > /dev/null 2>&1; then
+        log_success "Imagen Docker jellyfin/jellyfin:latest ya existe"
     else
-        log_info "Construyendo imagen Docker de FFmpeg..."
-        cat > /tmp/Dockerfile.ffmpeg << 'EOF'
-FROM alpine:latest
-
-RUN apk add --no-cache ffmpeg
-
-CMD ["sleep", "infinity"]
-EOF
-        docker build -t ffmpeg-arm64 /tmp -f /tmp/Dockerfile.ffmpeg
-        log_success "Imagen Docker ffmpeg-arm64 construida"
+        docker pull jellyfin/jellyfin:latest
+        log_success "Imagen Docker jellyfin/jellyfin:latest descargada"
+    fi
+    
+    # Limpiar imagen ffmpeg-arm64 vieja si existe (ya no se necesita)
+    if docker image inspect ffmpeg-arm64 > /dev/null 2>&1; then
+        log_info "Eliminando imagen Docker ffmpeg-arm64 obsoleta..."
+        # Detener y eliminar contenedor ffmpeg si existe
+        docker rm -f ffmpeg 2>/dev/null || true
+        docker rmi ffmpeg-arm64 2>/dev/null || true
+        log_success "Imagen ffmpeg-arm64 eliminada"
     fi
 }
 
@@ -246,28 +249,20 @@ services:
     group_add:
       - '${RENDER_GROUP_ID}'
     devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-      - /dev/dri/card0:/dev/dri/card0
+      - /dev/dri:/dev/dri
+      - /dev/dma_heap:/dev/dma_heap
+      - /dev/mali0:/dev/mali0
+      - /dev/rga:/dev/rga
+      - /dev/mpp_service:/dev/mpp_service
     volumes:
       - ${JELLYFIN_CONFIG}:/config
       - ${JELLYFIN_CACHE}:/cache
       - ${VIDEO_OUTPUT}:/media
+      - ${VIDEO_PROCESS}:/videos
     network_mode: host
     restart: unless-stopped
     environment:
       - TZ=${TZ:-UTC}
-
-  ffmpeg:
-    image: ffmpeg-arm64
-    container_name: ffmpeg
-    devices:
-      - /dev/dri/renderD128:/dev/dri/renderD128
-      - /dev/dri/card0:/dev/dri/card0
-    volumes:
-      - ${VIDEO_PROCESS}:/videos
-      - ${VIDEO_OUTPUT}:/output
-    restart: unless-stopped
-    command: sleep infinity
 EOF
 
     log_success "Archivo docker-compose.yml creado"
@@ -297,6 +292,11 @@ LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
 INPUT_DIR="/opt/streaming/entrada"
 PROCESS_DIR="/opt/streaming/procesando"
 OUTPUT_DIR="/opt/streaming/final"
+
+# Rutas de ffmpeg/ffprobe dentro del contenedor Jellyfin
+FFMPEG_BIN="/usr/lib/jellyfin-ffmpeg/ffmpeg"
+FFPROBE_BIN="/usr/lib/jellyfin-ffmpeg/ffprobe"
+DOCKER_CONTAINER="jellyfin"
 
 # Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
 SUBFOLDER=""
@@ -343,8 +343,8 @@ cleanup_on_error() {
     
     # Analizar codecs del video
     echo "Analizando codecs del video..."
-    VIDEO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ffmpeg ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
     echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
@@ -364,27 +364,28 @@ cleanup_on_error() {
     if [[ $NEEDS_RECODE -eq 1 ]]; then
         echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
         
-        # Intentar con aceleración hardware (VAAPI), si falla usar libx264
-        VAAPI_OK=0
-        if [[ -e /dev/dri/renderD128 ]]; then
-            echo "Intentando recodificación con VAAPI (aceleración hardware)..."
-            if docker exec ffmpeg ffmpeg -vaapi_device /dev/dri/renderD128 \
+        # Intentar con aceleración hardware RKMPP (Rockchip), si falla usar libx264
+        RKMPP_OK=0
+        if [[ -e /dev/mpp_service ]]; then
+            echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime -afbc rga \
                 -i "/videos/${JUST_FILENAME}" \
-                -vf 'format=nv12,hwupload' \
-                -c:v h264_vaapi -qp ${VIDEO_CRF} \
+                -vf 'scale_rkrga=format=nv12' \
+                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
                 "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                VAAPI_OK=1
-                echo "Recodificación con VAAPI exitosa"
+                RKMPP_OK=1
+                echo "Recodificación con RKMPP exitosa"
             else
-                echo "VAAPI falló, usando libx264 (software)..."
+                echo "RKMPP falló, usando libx264 (software)..."
             fi
         fi
         
-        if [[ $VAAPI_OK -eq 0 ]]; then
+        if [[ $RKMPP_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
-            docker exec ffmpeg ffmpeg -i "/videos/${JUST_FILENAME}" \
+            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
@@ -645,16 +646,9 @@ start_services() {
     
     # Verificar servicios
     if docker ps | grep -q jellyfin; then
-        log_success "Jellyfin iniciado correctamente"
+        log_success "Jellyfin iniciado correctamente (incluye FFmpeg con RKMPP)"
     else
         log_error "Error al iniciar Jellyfin"
-        return 1
-    fi
-    
-    if docker ps | grep -q ffmpeg; then
-        log_success "FFmpeg iniciado correctamente"
-    else
-        log_error "Error al iniciar FFmpeg"
         return 1
     fi
     
@@ -670,10 +664,15 @@ print_summary() {
     echo "  INSTALACIÓN COMPLETADA EXITOSAMENTE"
     echo "================================================"
     echo ""
-    echo "Servicios instalados:"
+    echo "Contenedor Docker:"
     echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
-    echo "  - FFmpeg: Recodificación de videos"
-    echo "  - Monitor: Automatización de procesamiento"
+    echo "    (incluye FFmpeg con aceleracion hardware RKMPP)"
+    echo "  - Monitor: Automatizacion de procesamiento"
+    echo ""
+    echo "Aceleracion hardware:"
+    echo "  - RKMPP: h264_rkmpp encoder/decoder (RK3588)"
+    echo "  - Fallback: libx264 (software)"
+    echo "  - Requiere: kernel BSP Rockchip (5.10/6.1)"
     echo ""
     echo "Directorios:"
     echo "  - Entrada: ${VIDEO_INPUT}"
@@ -685,14 +684,16 @@ print_summary() {
     echo "Próximos pasos:"
     echo "  1. Acceder a Jellyfin para configuración inicial"
     echo "  2. Crear biblioteca apuntando a /media"
-    echo "  3. Copiar videos a ${VIDEO_INPUT}"
-    echo "  4. Los videos se procesarán automáticamente"
+    echo "  3. Habilitar RKMPP en Jellyfin > Panel > Reproduccion > Aceleracion"
+    echo "  4. Copiar videos a ${VIDEO_INPUT}"
+    echo "  5. Los videos se procesaran automaticamente"
     echo ""
     echo "Comandos útiles:"
     echo "  - Ver logs: tail -f ${LOG_DIR}/*.log"
     echo "  - Ver estado: cd ${BASE_DIR} && docker compose ps"
     echo "  - Reiniciar: cd ${BASE_DIR} && docker compose restart"
     echo "  - Detener: cd ${BASE_DIR} && docker compose down"
+    echo "  - Verificar RKMPP: docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp"
     echo ""
     echo "================================================"
 }
@@ -728,8 +729,8 @@ main() {
     # Crear estructura de directorios
     create_directory_structure
     
-    # Construir imágenes Docker
-    build_docker_images
+    # Descargar imágenes Docker
+    pull_docker_images
     
     # Crear docker-compose
     create_docker_compose
