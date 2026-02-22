@@ -237,33 +237,42 @@ pull_docker_images() {
 
 get_docker_devices() {
     local devices=""
+    local has_device=false
     
-    # Device /dev/dri - casi siempre existe
+    # Device /dev/dri
     if [[ -e /dev/dri ]]; then
-        devices="      - /dev/dri:/dev/dri\n"
+        devices="${devices}      - /dev/dri:/dev/dri\n"
+        has_device=true
     fi
     
-    # Device /dev/dma_heap - existe en mainline 6.12+
+    # Device /dev/dma_heap
     if [[ -e /dev/dma_heap ]]; then
         devices="${devices}      - /dev/dma_heap:/dev/dma_heap\n"
+        has_device=true
     fi
     
-    # Device /dev/mali0 - solo en kernel vendor
+    # Device /dev/mali0
     if [[ -e /dev/mali0 ]]; then
         devices="${devices}      - /dev/mali0:/dev/mali0\n"
+        has_device=true
     fi
     
-    # Device /dev/rga - solo en kernel vendor
+    # Device /dev/rga
     if [[ -e /dev/rga ]]; then
         devices="${devices}      - /dev/rga:/dev/rga\n"
+        has_device=true
     fi
     
-    # Device /dev/mpp_service - solo en kernel vendor
+    # Device /dev/mpp_service
     if [[ -e /dev/mpp_service ]]; then
         devices="${devices}      - /dev/mpp_service:/dev/mpp_service\n"
+        has_device=true
     fi
     
-    echo -e "$devices"
+    if [[ "$has_device" == "true" ]]; then
+        echo "    devices:"
+        echo -e "$devices"
+    fi
 }
 
 create_docker_compose() {
