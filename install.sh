@@ -235,10 +235,42 @@ pull_docker_images() {
     fi
 }
 
+get_docker_devices() {
+    local devices=""
+    
+    # Device /dev/dri - casi siempre existe
+    if [[ -e /dev/dri ]]; then
+        devices="      - /dev/dri:/dev/dri\n"
+    fi
+    
+    # Device /dev/dma_heap - existe en mainline 6.12+
+    if [[ -e /dev/dma_heap ]]; then
+        devices="${devices}      - /dev/dma_heap:/dev/dma_heap\n"
+    fi
+    
+    # Device /dev/mali0 - solo en kernel vendor
+    if [[ -e /dev/mali0 ]]; then
+        devices="${devices}      - /dev/mali0:/dev/mali0\n"
+    fi
+    
+    # Device /dev/rga - solo en kernel vendor
+    if [[ -e /dev/rga ]]; then
+        devices="${devices}      - /dev/rga:/dev/rga\n"
+    fi
+    
+    # Device /dev/mpp_service - solo en kernel vendor
+    if [[ -e /dev/mpp_service ]]; then
+        devices="${devices}      - /dev/mpp_service:/dev/mpp_service\n"
+    fi
+    
+    echo -e "$devices"
+}
+
 create_docker_compose() {
     log_info "Creando archivo docker-compose.yml..."
     
     RENDER_GROUP_ID=${RENDER_GROUP_ID:-122}
+    DOCKER_DEVICES=$(get_docker_devices)
     
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
 services:
@@ -248,12 +280,7 @@ services:
     user: 1000:1000
     group_add:
       - '${RENDER_GROUP_ID}'
-    devices:
-      - /dev/dri:/dev/dri
-      - /dev/dma_heap:/dev/dma_heap
-      - /dev/mali0:/dev/mali0
-      - /dev/rga:/dev/rga
-      - /dev/mpp_service:/dev/mpp_service
+$DOCKER_DEVICES
     volumes:
       - ${JELLYFIN_CONFIG}:/config
       - ${JELLYFIN_CACHE}:/cache
