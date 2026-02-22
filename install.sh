@@ -335,11 +335,13 @@ FFPROBE_BIN="/usr/lib/jellyfin-ffmpeg/ffprobe"
 DOCKER_CONTAINER="jellyfin"
 
 # Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
-SUBFOLDER=""
-if [[ "$VIDEO_FILE" == Peliculas/* ]]; then
-    SUBFOLDER="Peliculas"
-elif [[ "$VIDEO_FILE" == Series/* ]]; then
-    SUBFOLDER="Series"
+# Extraer la ruta relativa completa (ej: Series/Mi Serie/Season 1)
+RELATIVE_PATH=$(dirname "$VIDEO_FILE")
+
+# Validar que esté dentro de Peliculas o Series
+if [[ "$RELATIVE_PATH" != "Peliculas"* && "$RELATIVE_PATH" != "Series"* ]]; then
+    echo "Advertencia: El archivo no está en Peliculas/ o Series/ ($RELATIVE_PATH)"
+    # Aún así procesamos, pero mantenemos la estructura
 fi
 
 # Función de limpieza en caso de error
@@ -350,12 +352,9 @@ cleanup_on_error() {
     # Devolver archivo original a entrada/ si sigue en procesando/
     if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
         echo "Devolviendo ${JUST_FILENAME} a entrada/..."
-        if [[ -n "$SUBFOLDER" ]]; then
-            mkdir -p "${INPUT_DIR}/${SUBFOLDER}"
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
-        else
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${JUST_FILENAME}"
-        fi
+        # Crear directorio destino en entrada si no existe
+        mkdir -p "${INPUT_DIR}/${RELATIVE_PATH}"
+        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${RELATIVE_PATH}/${JUST_FILENAME}"
         echo "Archivo devuelto a entrada/ para reprocesar"
     fi
 }
@@ -364,9 +363,7 @@ cleanup_on_error() {
     echo "=== $(date) ==="
     echo "Procesando: $VIDEO_FILE"
     echo "Configuración: codec=$VIDEO_CODEC_TARGET/$AUDIO_CODEC_TARGET, crf=$VIDEO_CRF, preset=$FFMPEG_PRESET"
-    if [[ -n "$SUBFOLDER" ]]; then
-        echo "Subcarpeta detectada: $SUBFOLDER"
-    fi
+    echo "Carpeta origen: $RELATIVE_PATH"
     
     # Activar trap para limpiar en caso de error o interrupción
     trap cleanup_on_error ERR EXIT
@@ -437,12 +434,8 @@ cleanup_on_error() {
     
     # Mover video a final
     echo "Moviendo video a final..."
-    if [[ -n "$SUBFOLDER" ]]; then
-        mkdir -p "${OUTPUT_DIR}/${SUBFOLDER}"
-        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${SUBFOLDER}/${JUST_FILENAME}"
-    else
-        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${JUST_FILENAME}"
-    fi
+    mkdir -p "${OUTPUT_DIR}/${RELATIVE_PATH}"
+    mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${RELATIVE_PATH}/${JUST_FILENAME}"
     
     # Limpiar archivos temporales
     rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
