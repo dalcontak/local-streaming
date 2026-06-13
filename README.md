@@ -13,9 +13,9 @@ Sistema de streaming local automatizado con recodificación de video, ejecutado 
                                    (dentro de Jellyfin)
 ```
 
-Un solo contenedor Docker (`nyanmisaka/jellyfin:latest-rockchip`) que incluye:
+Un solo contenedor Docker (`jellyfin/jellyfin:latest`) que incluye:
 - Jellyfin como servidor de media
-- FFmpeg con aceleración hardware V4L2 para Rockchip RK3588 (kernel 6.x)
+- Procesamiento previo con V4L2 (aceleración hardware Rockchip RK3588)
 - Fallback automático a libx264 (software) si V4L2 no está disponible
 
 ## Instalación Rápida

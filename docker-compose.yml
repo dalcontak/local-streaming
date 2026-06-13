@@ -3,7 +3,7 @@
 
 services:
   jellyfin:
-    image: nyanmisaka/jellyfin:latest-rockchip
+    image: jellyfin/jellyfin:latest
     container_name: jellyfin
     user: 1000:1000
     group_add:

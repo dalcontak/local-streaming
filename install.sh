@@ -227,14 +227,13 @@ create_directory_structure() {
 }
 
 pull_docker_images() {
-    log_info "Descargando imagen Docker de Jellyfin con aceleración hardware..."
+    log_info "Descargando imagen Docker de Jellyfin..."
     
-    # Imagen nyanmisaka con soporte RKMPP + V4L2 para RK3588
-    if docker image inspect nyanmisaka/jellyfin:latest-rockchip > /dev/null 2>&1; then
-        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip ya existe"
+    if docker image inspect jellyfin/jellyfin:latest > /dev/null 2>&1; then
+        log_success "Imagen Docker jellyfin/jellyfin:latest ya existe"
     else
-        docker pull nyanmisaka/jellyfin:latest-rockchip
-        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip descargada"
+        docker pull jellyfin/jellyfin:latest
+        log_success "Imagen Docker jellyfin/jellyfin:latest descargada"
     fi
     
     # Limpiar imagen ffmpeg-arm64 vieja si existe (ya no se necesita)
@@ -301,7 +300,7 @@ create_docker_compose() {
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
 services:
   jellyfin:
-    image: nyanmisaka/jellyfin:latest-rockchip
+    image: jellyfin/jellyfin:latest
     container_name: jellyfin
     user: 1000:1000
     group_add:
@@ -708,7 +707,7 @@ start_services() {
     
     # Verificar servicios
     if docker ps | grep -q jellyfin; then
-        log_success "Jellyfin iniciado correctamente (nyanmisaka con aceleración V4L2)"
+        log_success "Jellyfin iniciado correctamente"
     else
         log_error "Error al iniciar Jellyfin"
         return 1
