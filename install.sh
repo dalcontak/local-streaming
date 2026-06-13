@@ -227,13 +227,13 @@ create_directory_structure() {
 }
 
 pull_docker_images() {
-    log_info "Descargando imagen Docker de Jellyfin..."
+    log_info "Descargando imagen Docker de Jellyfin con aceleración hardware..."
     
-    if docker image inspect jellyfin/jellyfin:latest > /dev/null 2>&1; then
-        log_success "Imagen Docker jellyfin/jellyfin:latest ya existe"
+    if docker image inspect nyanmisaka/jellyfin:latest-rockchip > /dev/null 2>&1; then
+        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip ya existe"
     else
-        docker pull jellyfin/jellyfin:latest
-        log_success "Imagen Docker jellyfin/jellyfin:latest descargada"
+        docker pull nyanmisaka/jellyfin:latest-rockchip
+        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip descargada"
     fi
     
     # Limpiar imagen ffmpeg-arm64 vieja si existe (ya no se necesita)
@@ -300,7 +300,7 @@ create_docker_compose() {
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
 services:
   jellyfin:
-    image: jellyfin/jellyfin:latest
+    image: nyanmisaka/jellyfin:latest-rockchip
     container_name: jellyfin
     user: 1000:1000
     group_add:
