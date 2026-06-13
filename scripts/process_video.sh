@@ -92,26 +92,41 @@ cleanup_on_error() {
     if [[ $NEEDS_RECODE -eq 1 ]]; then
         echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
         
-        # Intentar con aceleración hardware RKMPP (Rockchip), si falla usar libx264
-        RKMPP_OK=0
-        if [[ -e /dev/mpp_service ]]; then
-            echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+        # Intentar con aceleración hardware V4L2 (RK3588 kernel 6.x)
+        HWACCEL_OK=0
+        if [[ -e /dev/video3 ]]; then
+            echo "Intentando recodificación con V4L2 (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime -afbc rga \
+                -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 \
                 -i "/videos/${JUST_FILENAME}" \
-                -vf 'scale_rkrga=format=nv12' \
+                -c:v h264_v4l2m2m -b:v 5M \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                HWACCEL_OK=1
+                echo "Recodificación con V4L2 exitosa"
+            else
+                echo "V4L2 falló, usando libx264 (software)..."
+            fi
+        fi
+        
+        if [[ -e /dev/mpp_service && $HWACCEL_OK -eq 0 ]]; then
+            echo "Intentando recodificación con RKMPP legacy..."
+            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
                 "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                RKMPP_OK=1
+                HWACCEL_OK=1
                 echo "Recodificación con RKMPP exitosa"
             else
                 echo "RKMPP falló, usando libx264 (software)..."
             fi
         fi
         
-        if [[ $RKMPP_OK -eq 0 ]]; then
+        if [[ $HWACCEL_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
             docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \

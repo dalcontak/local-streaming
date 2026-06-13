@@ -3,17 +3,25 @@
 
 services:
   jellyfin:
-    image: jellyfin/jellyfin:latest
+    image: nyanmisaka/jellyfin:latest-rockchip
     container_name: jellyfin
     user: 1000:1000
     group_add:
       - '122'  # Render group ID (ajustar según sistema)
+      - '44'   # Video group
     devices:
       - /dev/dri:/dev/dri
       - /dev/dma_heap:/dev/dma_heap
-      - /dev/mali0:/dev/mali0
-      - /dev/rga:/dev/rga
-      - /dev/mpp_service:/dev/mpp_service
+      # V4L2 codec devices (RK3588)
+      - /dev/video0:/dev/video0   # rockchip-rga
+      - /dev/video1:/dev/video1   # rkvdec2 (decoder)
+      - /dev/video2:/dev/video2   # vpu-dec
+      - /dev/video3:/dev/video3   # vepu121-enc (encoder)
+      - /dev/video4:/dev/video4   # av1-dec
+      - /dev/media0:/dev/media0
+      - /dev/media1:/dev/media1
+      - /dev/media2:/dev/media2
+      - /dev/media3:/dev/media3
     volumes:
       - /opt/streaming/configs/jellyfin:/config
       - /opt/streaming/data/jellyfin/cache:/cache

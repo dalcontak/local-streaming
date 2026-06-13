@@ -9,14 +9,14 @@ Sistema de streaming local automatizado con recodificación de video, ejecutado 
 ```
 [Usuario] → Copia video → [entrada/] → [Monitor] → [procesando/] → [final/] → [Jellyfin]
                                             ↓
-                                    [FFmpeg (RKMPP)]
+                                   [FFmpeg (V4L2)]
                                    (dentro de Jellyfin)
 ```
 
-Un solo contenedor Docker (`jellyfin/jellyfin:latest`) que incluye:
+Un solo contenedor Docker (`nyanmisaka/jellyfin:latest-rockchip`) que incluye:
 - Jellyfin como servidor de media
-- FFmpeg con aceleración hardware RKMPP para Rockchip RK3588
-- Fallback automático a libx264 (software) si RKMPP no está disponible
+- FFmpeg con aceleración hardware V4L2 para Rockchip RK3588 (kernel 6.x)
+- Fallback automático a libx264 (software) si V4L2 no está disponible
 
 ## Instalación Rápida
 
@@ -271,20 +271,21 @@ docker compose restart jellyfin
 ### FFmpeg falla al recodificar
 
 ```bash
-# Verificar dispositivos RKMPP
-ls -la /dev/dri/ /dev/mpp_service /dev/rga /dev/dma_heap
+# Verificar dispositivos V4L2
+ls -la /dev/video* /dev/media* /dev/dri/ /dev/dma_heap
 
-# Verificar grupo render
+# Verificar grupo render y video
 getent group render
+getent group video
 
-# Verificar que RKMPP está disponible
-docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp
+# Verificar que V4L2 está disponible en el contenedor
+docker exec jellyfin ffmpeg -encoders 2>/dev/null | grep v4l2
 
-# Probar recodificación manual con RKMPP
-docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hwaccel rkmpp -hwaccel_output_format drm_prime -i /videos/test.mp4 -c:v h264_rkmpp -y /videos/test_out.mp4
+# Probar recodificación manual con V4L2
+docker exec jellyfin ffmpeg -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 -i /videos/test.mp4 -c:v h264_v4l2m2m -b:v 5M -y /videos/test_out.mp4
 
-# Si RKMPP no funciona, verificar kernel (requiere BSP 5.10/6.1)
-uname -r
+# Verificar decodificadores V4L2
+docker exec jellyfin ffmpeg -decoders 2>/dev/null | grep v4l2
 ```
 
 ### Videos no se procesan automáticamente
@@ -303,10 +304,10 @@ systemctl restart streaming-monitor
 ### Aceleración Hardware No Disponible
 
 ```bash
-# Verificar dispositivos RKMPP (Rockchip)
-ls -la /dev/dri/ /dev/mpp_service /dev/rga /dev/dma_heap
+# Verificar dispositivos V4L2 (kernel 6.x en RK3588)
+ls -la /dev/video* /dev/media* /dev/dri/ /dev/dma_heap
 
-# Verificar kernel (RKMPP requiere BSP kernel 5.10 o 6.1)
+# Verificar kernel
 uname -r
 
 # Verificar grupos
@@ -315,10 +316,13 @@ groups $(whoami)
 # Agregar usuario a grupos
 sudo usermod -aG docker,render,video $(whoami)
 
-# Verificar encoders RKMPP disponibles
-docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp
+# Verificar que el contenedor tiene acceso a /dev/video*
+docker exec jellyfin ls -la /dev/video*
 
-# Si RKMPP no funciona, el sistema usa libx264 (software) automáticamente
+# Verificar encoders V4L2 disponibles
+docker exec jellyfin ffmpeg -encoders 2>/dev/null | grep v4l2
+
+# Si V4L2 no funciona, el sistema usa libx264 (software) automáticamente
 # Re-iniciar sesión o reiniciar
 sudo reboot
 ```

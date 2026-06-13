@@ -105,6 +105,18 @@ check_hardware() {
         log_warning "Dispositivos DRI no detectados, aceleración hardware no disponible"
         RENDER_GROUP_ID=122
     fi
+    
+    # Verificar dispositivos V4L2 para aceleración de video
+    V4L2_DEVICES=$(ls /dev/video* 2>/dev/null | wc -l)
+    if [[ $V4L2_DEVICES -gt 0 ]]; then
+        log_success "Dispositivos V4L2 detectados: ${V4L2_DEVICES}"
+        for dev in /dev/video*; do
+            name=$(cat "/sys/class/video4linux/$(basename $dev)/name" 2>/dev/null || echo "desconocido")
+            echo "       ${dev} -> ${name}"
+        done
+    else
+        log_warning "Dispositivos V4L2 no detectados"
+    fi
 }
 
 check_docker() {
@@ -215,20 +227,19 @@ create_directory_structure() {
 }
 
 pull_docker_images() {
-    log_info "Descargando imagen Docker de Jellyfin..."
+    log_info "Descargando imagen Docker de Jellyfin con aceleración hardware..."
     
-    # Usar la imagen oficial de Jellyfin que incluye ffmpeg con RKMPP
-    if docker image inspect jellyfin/jellyfin:latest > /dev/null 2>&1; then
-        log_success "Imagen Docker jellyfin/jellyfin:latest ya existe"
+    # Imagen nyanmisaka con soporte RKMPP + V4L2 para RK3588
+    if docker image inspect nyanmisaka/jellyfin:latest-rockchip > /dev/null 2>&1; then
+        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip ya existe"
     else
-        docker pull jellyfin/jellyfin:latest
-        log_success "Imagen Docker jellyfin/jellyfin:latest descargada"
+        docker pull nyanmisaka/jellyfin:latest-rockchip
+        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip descargada"
     fi
     
     # Limpiar imagen ffmpeg-arm64 vieja si existe (ya no se necesita)
     if docker image inspect ffmpeg-arm64 > /dev/null 2>&1; then
         log_info "Eliminando imagen Docker ffmpeg-arm64 obsoleta..."
-        # Detener y eliminar contenedor ffmpeg si existe
         docker rm -f ffmpeg 2>/dev/null || true
         docker rmi ffmpeg-arm64 2>/dev/null || true
         log_success "Imagen ffmpeg-arm64 eliminada"
@@ -251,23 +262,29 @@ get_docker_devices() {
         has_device=true
     fi
     
-    # Device /dev/mali0
-    if [[ -e /dev/mali0 ]]; then
-        devices="${devices}      - /dev/mali0:/dev/mali0\n"
-        has_device=true
-    fi
+    # V4L2 video devices (RK3588 con kernel 6.x)
+    for device in /dev/video*; do
+        if [[ -e "$device" ]]; then
+            devices="${devices}      - ${device}:${device}\n"
+            has_device=true
+        fi
+    done
     
-    # Device /dev/rga
-    if [[ -e /dev/rga ]]; then
-        devices="${devices}      - /dev/rga:/dev/rga\n"
-        has_device=true
-    fi
+    # V4L2 media devices
+    for device in /dev/media*; do
+        if [[ -e "$device" ]]; then
+            devices="${devices}      - ${device}:${device}\n"
+            has_device=true
+        fi
+    done
     
-    # Device /dev/mpp_service
-    if [[ -e /dev/mpp_service ]]; then
-        devices="${devices}      - /dev/mpp_service:/dev/mpp_service\n"
-        has_device=true
-    fi
+    # Legacy rockchip devices (solo si existen)
+    for device in /dev/mali0 /dev/rga /dev/mpp_service; do
+        if [[ -e "$device" ]]; then
+            devices="${devices}      - ${device}:${device}\n"
+            has_device=true
+        fi
+    done
     
     if [[ "$has_device" == "true" ]]; then
         echo "    devices:"
@@ -284,11 +301,12 @@ create_docker_compose() {
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
 services:
   jellyfin:
-    image: jellyfin/jellyfin:latest
+    image: nyanmisaka/jellyfin:latest-rockchip
     container_name: jellyfin
     user: 1000:1000
     group_add:
       - '${RENDER_GROUP_ID}'
+      - '44'
 $DOCKER_DEVICES
     volumes:
       - ${JELLYFIN_CONFIG}:/config
@@ -397,26 +415,41 @@ cleanup_on_error() {
     if [[ $NEEDS_RECODE -eq 1 ]]; then
         echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
         
-        # Intentar con aceleración hardware RKMPP (Rockchip), si falla usar libx264
-        RKMPP_OK=0
-        if [[ -e /dev/mpp_service ]]; then
-            echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+        # Intentar con aceleración hardware V4L2 (RK3588 kernel 6.x)
+        HWACCEL_OK=0
+        if [[ -e /dev/video3 ]]; then
+            echo "Intentando recodificación con V4L2 (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime -afbc rga \
+                -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 \
                 -i "/videos/${JUST_FILENAME}" \
-                -vf 'scale_rkrga=format=nv12' \
+                -c:v h264_v4l2m2m -b:v 5M \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                HWACCEL_OK=1
+                echo "Recodificación con V4L2 exitosa"
+            else
+                echo "V4L2 falló, usando libx264 (software)..."
+            fi
+        fi
+        
+        if [[ -e /dev/mpp_service && $HWACCEL_OK -eq 0 ]]; then
+            echo "Intentando recodificación con RKMPP legacy..."
+            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
                 "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                RKMPP_OK=1
+                HWACCEL_OK=1
                 echo "Recodificación con RKMPP exitosa"
             else
                 echo "RKMPP falló, usando libx264 (software)..."
             fi
         fi
         
-        if [[ $RKMPP_OK -eq 0 ]]; then
+        if [[ $HWACCEL_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
             docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
@@ -675,7 +708,7 @@ start_services() {
     
     # Verificar servicios
     if docker ps | grep -q jellyfin; then
-        log_success "Jellyfin iniciado correctamente (incluye FFmpeg con RKMPP)"
+        log_success "Jellyfin iniciado correctamente (nyanmisaka con aceleración V4L2)"
     else
         log_error "Error al iniciar Jellyfin"
         return 1
@@ -695,13 +728,13 @@ print_summary() {
     echo ""
     echo "Contenedor Docker:"
     echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
-    echo "    (incluye FFmpeg con aceleracion hardware RKMPP)"
+    echo "    (imagen nyanmisaka/jellyfin:latest-rockchip con aceleración V4L2)"
     echo "  - Monitor: Automatizacion de procesamiento"
     echo ""
     echo "Aceleracion hardware:"
-    echo "  - RKMPP: h264_rkmpp encoder/decoder (RK3588)"
+    echo "  - V4L2: h264_v4l2m2m encoder/decoder (RK3588 kernel 6.x)"
     echo "  - Fallback: libx264 (software)"
-    echo "  - Requiere: kernel BSP Rockchip (5.10/6.1)"
+    echo "  - Requiere: dispositivos /dev/video* y /dev/media*"
     echo ""
     echo "Directorios:"
     echo "  - Entrada: ${VIDEO_INPUT}"
@@ -713,7 +746,7 @@ print_summary() {
     echo "Próximos pasos:"
     echo "  1. Acceder a Jellyfin para configuración inicial"
     echo "  2. Crear biblioteca apuntando a /media"
-    echo "  3. Habilitar RKMPP en Jellyfin > Panel > Reproduccion > Aceleracion"
+    echo "  3. Configurar aceleracion V4L2 en Jellyfin > Panel > Reproduccion"
     echo "  4. Copiar videos a ${VIDEO_INPUT}"
     echo "  5. Los videos se procesaran automaticamente"
     echo ""
@@ -722,7 +755,7 @@ print_summary() {
     echo "  - Ver estado: cd ${BASE_DIR} && docker compose ps"
     echo "  - Reiniciar: cd ${BASE_DIR} && docker compose restart"
     echo "  - Detener: cd ${BASE_DIR} && docker compose down"
-    echo "  - Verificar RKMPP: docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -encoders 2>/dev/null | grep rkmpp"
+    echo "  - Verificar decodificadores: docker exec jellyfin ffmpeg -decoders 2>/dev/null | grep v4l2"
     echo ""
     echo "================================================"
 }
