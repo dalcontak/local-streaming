@@ -71,6 +71,17 @@ check_hardware() {
         log_success "Arquitectura ARM64 detectada"
     fi
     
+    # Verificar kernel
+    KERNEL=$(uname -r)
+    if echo "$KERNEL" | grep -q "vendor"; then
+        log_info "Kernel vendor detectado: ${KERNEL}"
+    elif echo "$KERNEL" | grep -q "current"; then
+        log_error "Este branch es para kernel vendor. Usa la rama main para kernel current."
+        exit 1
+    else
+        log_warning "Kernel: ${KERNEL} (no se pudo determinar variante)"
+    fi
+    
     # Verificar memoria RAM (mínimo 4GB recomendado)
     RAM_GB=$(free -g | awk '/^Mem:/{print $2}')
     if [[ $RAM_GB -lt 4 ]]; then
@@ -99,23 +110,23 @@ check_hardware() {
             log_success "Render group existe (ID: ${RENDER_GROUP_ID})"
         else
             log_warning "Render group no existe, se creará automáticamente"
-            RENDER_GROUP_ID=122
+            RENDER_GROUP_ID=993
         fi
     else
         log_warning "Dispositivos DRI no detectados, aceleración hardware no disponible"
-        RENDER_GROUP_ID=122
+        RENDER_GROUP_ID=993
     fi
     
-    # Verificar dispositivos V4L2 para aceleración de video
-    V4L2_DEVICES=$(ls /dev/video* 2>/dev/null | wc -l)
-    if [[ $V4L2_DEVICES -gt 0 ]]; then
-        log_success "Dispositivos V4L2 detectados: ${V4L2_DEVICES}"
-        for dev in /dev/video*; do
-            name=$(cat "/sys/class/video4linux/$(basename $dev)/name" 2>/dev/null || echo "desconocido")
-            echo "       ${dev} -> ${name}"
-        done
+    # Verificar dispositivo mpp_service (kernel vendor)
+    if [[ -e /dev/mpp_service ]]; then
+        log_success "Dispositivo mpp_service detectado: $(ls -la /dev/mpp_service)"
     else
-        log_warning "Dispositivos V4L2 no detectados"
+        log_warning "Dispositivo mpp_service no detectado. Asegúrate de usar kernel vendor."
+    fi
+    
+    # Verificar dma_heap (opcional en vendor kernel)
+    if [[ -d /dev/dma_heap ]]; then
+        log_success "Dispositivos dma_heap detectados"
     fi
 }
 
@@ -179,8 +190,8 @@ install_docker() {
 
 create_render_group() {
     if ! getent group render > /dev/null 2>&1; then
-        log_info "Creando grupo render (ID: 122)..."
-        groupadd -g 122 render
+        log_info "Creando grupo render (ID: ${RENDER_GROUP_ID:-993})..."
+        groupadd -g "${RENDER_GROUP_ID:-993}" render
         log_success "Grupo render creado"
     fi
     
@@ -255,35 +266,17 @@ get_docker_devices() {
         has_device=true
     fi
     
-    # Device /dev/dma_heap
+    # Device /dev/dma_heap (opcional en vendor kernel)
     if [[ -e /dev/dma_heap ]]; then
         devices="${devices}      - /dev/dma_heap:/dev/dma_heap\n"
         has_device=true
     fi
     
-    # V4L2 video devices (RK3588 con kernel 6.x)
-    for device in /dev/video*; do
-        if [[ -e "$device" ]]; then
-            devices="${devices}      - ${device}:${device}\n"
-            has_device=true
-        fi
-    done
-    
-    # V4L2 media devices
-    for device in /dev/media*; do
-        if [[ -e "$device" ]]; then
-            devices="${devices}      - ${device}:${device}\n"
-            has_device=true
-        fi
-    done
-    
-    # Legacy rockchip devices (solo si existen)
-    for device in /dev/mali0 /dev/rga /dev/mpp_service; do
-        if [[ -e "$device" ]]; then
-            devices="${devices}      - ${device}:${device}\n"
-            has_device=true
-        fi
-    done
+    # Rockchip mpp_service (kernel vendor)
+    if [[ -e /dev/mpp_service ]]; then
+        devices="${devices}      - /dev/mpp_service:/dev/mpp_service\n"
+        has_device=true
+    fi
     
     if [[ "$has_device" == "true" ]]; then
         echo "    devices:"
@@ -414,9 +407,25 @@ cleanup_on_error() {
     if [[ $NEEDS_RECODE -eq 1 ]]; then
         echo "Recodificando video a ${VIDEO_CODEC_TARGET} + ${AUDIO_CODEC_TARGET}..."
         
-        # Intentar con aceleración hardware V4L2 (RK3588 kernel 6.x)
+        # Intentar con aceleración hardware RKMPP (kernel vendor)
         HWACCEL_OK=0
-        if [[ -e /dev/video3 ]]; then
+        if [[ -e /dev/mpp_service ]]; then
+            echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                -i "/videos/${JUST_FILENAME}" \
+                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                -c:a aac -b:a 128k \
+                -y \
+                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                HWACCEL_OK=1
+                echo "Recodificación con RKMPP exitosa"
+            else
+                echo "RKMPP falló, usando libx264 (software)..."
+            fi
+        fi
+        
+        if [[ -e /dev/video3 && $HWACCEL_OK -eq 0 ]]; then
             echo "Intentando recodificación con V4L2 (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                 -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 \
@@ -429,22 +438,6 @@ cleanup_on_error() {
                 echo "Recodificación con V4L2 exitosa"
             else
                 echo "V4L2 falló, usando libx264 (software)..."
-            fi
-        fi
-        
-        if [[ -e /dev/mpp_service && $HWACCEL_OK -eq 0 ]]; then
-            echo "Intentando recodificación con RKMPP legacy..."
-            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime \
-                -i "/videos/${JUST_FILENAME}" \
-                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
-                -c:a aac -b:a 128k \
-                -y \
-                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                HWACCEL_OK=1
-                echo "Recodificación con RKMPP exitosa"
-            else
-                echo "RKMPP falló, usando libx264 (software)..."
             fi
         fi
         
@@ -727,13 +720,13 @@ print_summary() {
     echo ""
     echo "Contenedor Docker:"
     echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
-    echo "    (imagen nyanmisaka/jellyfin:latest-rockchip con aceleración V4L2)"
+    echo "    (imagen nyanmisaka/jellyfin:latest-rockchip con aceleración HW)"
     echo "  - Monitor: Automatizacion de procesamiento"
     echo ""
     echo "Aceleracion hardware:"
-    echo "  - V4L2: h264_v4l2m2m encoder/decoder (RK3588 kernel 6.x)"
+    echo "  - RKMPP: h264_rkmpp encoder/decoder (kernel vendor)"
     echo "  - Fallback: libx264 (software)"
-    echo "  - Requiere: dispositivos /dev/video* y /dev/media*"
+    echo "  - Requiere: /dev/dri/ y /dev/mpp_service"
     echo ""
     echo "Directorios:"
     echo "  - Entrada: ${VIDEO_INPUT}"
@@ -745,7 +738,7 @@ print_summary() {
     echo "Próximos pasos:"
     echo "  1. Acceder a Jellyfin para configuración inicial"
     echo "  2. Crear biblioteca apuntando a /media"
-    echo "  3. Configurar aceleracion V4L2 en Jellyfin > Panel > Reproduccion"
+    echo "  3. Configurar aceleracion RKMPP en Jellyfin > Panel > Reproduccion"
     echo "  4. Copiar videos a ${VIDEO_INPUT}"
     echo "  5. Los videos se procesaran automaticamente"
     echo ""
@@ -754,7 +747,7 @@ print_summary() {
     echo "  - Ver estado: cd ${BASE_DIR} && docker compose ps"
     echo "  - Reiniciar: cd ${BASE_DIR} && docker compose restart"
     echo "  - Detener: cd ${BASE_DIR} && docker compose down"
-    echo "  - Verificar decodificadores: docker exec jellyfin ffmpeg -decoders 2>/dev/null | grep v4l2"
+    echo "  - Verificar decodificadores: docker exec jellyfin ffmpeg -decoders 2>/dev/null | grep rkmpp"
     echo ""
     echo "================================================"
 }
@@ -766,7 +759,7 @@ print_summary() {
 main() {
     echo "================================================"
     echo "  INSTALACIÓN AUTOMATIZADA DEL STACK DE STREAMING"
-    echo "  Orange Pi 5 Plus - Armbian"
+    echo "  Orange Pi 5 Plus - Armbian (kernel vendor)"
     echo "================================================"
     echo ""
     
