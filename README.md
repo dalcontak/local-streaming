@@ -4,6 +4,47 @@
 
 Sistema de streaming local automatizado con recodificación de video, ejecutado en Orange Pi 5 Plus.
 
+## Pre-requisitos
+
+### Kernel de Armbian
+
+El `docker-compose.yml` está configurado para el kernel **current** de Armbian (`linux-image-current-rockchip-rk3588`), que expone los codecs via **V4L2** (`/dev/video*`, `/dev/media*`).
+
+Si usas el kernel **vendor** (`linux-image-vendor-rk35xx`), los codecs se exponen via `/dev/mpp_service` en lugar de V4L2. Debes modificar la sección `devices:` del `docker-compose.yml`:
+
+```yaml
+# Para kernel vendor (mpp_service, sin V4L2):
+devices:
+  - /dev/dri:/dev/dri
+  - /dev/mpp_service:/dev/mpp_service
+#  - /dev/dma_heap:/dev/dma_heap   # Opcional, si existe
+```
+
+Para verificar qué kernel tienes:
+```bash
+uname -r
+# "6.1.115-current-rockchip-rk3588" → current
+# "6.1.115-vendor-rk35xx"          → vendor
+```
+
+Para ver qué dispositivos de video están disponibles:
+```bash
+ls -la /dev/video* /dev/media* /dev/mpp_service /dev/dri/ /dev/dma_heap 2>&1
+```
+
+### Grupo Render
+
+El `docker-compose.yml` referencia el grupo `render` con ID `122` (línea 10). Este ID varía según la distribución. Verifica el ID correcto en tu sistema:
+
+```bash
+getent group render
+# render:x:993   → Cambiar "122" por "993" en docker-compose.yml
+```
+
+### Aceleración Hardware
+
+El contenedor `nyanmisaka/jellyfin:latest-rockchip` incluye FFmpeg compilado con soporte para RK3588 via V4L2 (kernel current) o rkmpp (kernel vendor). Si la aceleración hardware no está disponible, Jellyfin hará transcodificación por software (libx264), lo que consume mucha CPU.
+
 ## Arquitectura
 
 ```
