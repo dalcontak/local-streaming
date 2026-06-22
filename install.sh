@@ -411,16 +411,29 @@ cleanup_on_error() {
         HWACCEL_OK=0
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
+            echo "  - Intento 1: HW decode + HW encode (full HW)"
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                -hwaccel rkmpp -hwaccel_output_format drm_prime \
                 -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
                 "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
                 HWACCEL_OK=1
-                echo "Recodificación con RKMPP exitosa"
+                echo "RKMPP full HW exitosa"
             else
-                echo "RKMPP falló, usando libx264 (software)..."
+                echo "  - Intento 2: SW decode + HW encode (fallback para codecs no soportados por HW)"
+                if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                    -i "/videos/${JUST_FILENAME}" \
+                    -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                    -c:a aac -b:a 128k \
+                    -y \
+                    "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                    HWACCEL_OK=1
+                    echo "RKMPP encode HW exitosa"
+                else
+                    echo "RKMPP falló completamente, usando libx264 (software)..."
+                fi
             fi
         fi
         
