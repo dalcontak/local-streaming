@@ -412,7 +412,6 @@ cleanup_on_error() {
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime \
                 -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
@@ -654,6 +653,25 @@ EOF
     log_success "Scripts de procesamiento creados"
 }
 
+create_udev_rules() {
+    log_info "Configurando reglas udev para dispositivos Rockchip..."
+
+    local udev_file="/etc/udev/rules.d/99-rockchip-mpp.rules"
+
+    if [[ -e /dev/mpp_service ]]; then
+        cat > ${udev_file} << EOF
+# Rockchip MPP (Media Process Platform) - acceso para contenedor Docker
+SUBSYSTEM=="mpp_service", MODE="0666"
+EOF
+        log_info "Regla udev creada: ${udev_file}"
+        udevadm control --reload-rules 2>/dev/null || true
+        log_success "Regla udev para mpp_service configurada"
+
+        # Aplicar permisos inmediatamente
+        chmod 666 /dev/mpp_service 2>/dev/null || true
+    fi
+}
+
 create_systemd_services() {
     log_info "Creando servicios systemd..."
     
@@ -779,6 +797,9 @@ main() {
     
     # Crear grupo render
     create_render_group
+    
+    # Configurar reglas udev para dispositivos Rockchip (mpp_service, etc.)
+    create_udev_rules
     
     # Crear estructura de directorios
     create_directory_structure

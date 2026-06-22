@@ -97,7 +97,6 @@ cleanup_on_error() {
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime \
                 -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
