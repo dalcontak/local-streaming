@@ -334,25 +334,22 @@ JUST_FILENAME=$(basename "$VIDEO_FILE")
 BASE_NAME=$(echo "$JUST_FILENAME" | sed 's/\.[^.]*$//')
 EXT="${VIDEO_FILE##*.}"
 
-LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
+    LOG_FILE="/opt/streaming/logs/process_${BASE_NAME}.log"
 INPUT_DIR="/opt/streaming/entrada"
 PROCESS_DIR="/opt/streaming/procesando"
 OUTPUT_DIR="/opt/streaming/final"
 
-# Rutas de ffmpeg/ffprobe dentro del contenedor Jellyfin
 FFMPEG_BIN="/usr/lib/jellyfin-ffmpeg/ffmpeg"
 FFPROBE_BIN="/usr/lib/jellyfin-ffmpeg/ffprobe"
 DOCKER_CONTAINER="jellyfin"
 
-# Detectar si el archivo viene de una subcarpeta (Peliculas o Series)
-# Extraer la ruta relativa completa (ej: Series/Mi Serie/Season 1)
 RELATIVE_PATH=$(dirname "$VIDEO_FILE")
 
-# Validar que esté dentro de Peliculas o Series
 if [[ "$RELATIVE_PATH" != "Peliculas"* && "$RELATIVE_PATH" != "Series"* ]]; then
     echo "Advertencia: El archivo no está en Peliculas/ o Series/ ($RELATIVE_PATH)"
-    # Aún así procesamos, pero mantenemos la estructura
 fi
+
+OUTPUT_NAME="${BASE_NAME}.mp4"
 
 # Función de limpieza en caso de error
 cleanup_on_error() {
@@ -463,19 +460,15 @@ cleanup_on_error() {
             echo "Recodificación con libx264 completada"
         fi
         
-        # Reemplazar archivo original con el recodificado
-        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${JUST_FILENAME}"
+        mv "${PROCESS_DIR}/${BASE_NAME}_recode.mp4" "${PROCESS_DIR}/${OUTPUT_NAME}"
     else
         echo "Video ya tiene buenos codecs, sin recodificar"
+        OUTPUT_NAME="${JUST_FILENAME}"
     fi
     
-    # Mover video a final
     echo "Moviendo video a final..."
     mkdir -p "${OUTPUT_DIR}/${RELATIVE_PATH}"
-    mv "${PROCESS_DIR}/${JUST_FILENAME}" "${OUTPUT_DIR}/${RELATIVE_PATH}/${JUST_FILENAME}"
-    
-    # Limpiar archivos temporales
-    rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    mv "${PROCESS_DIR}/${OUTPUT_NAME}" "${OUTPUT_DIR}/${RELATIVE_PATH}/${OUTPUT_NAME}"
     
     # Desactivar trap - proceso exitoso
     trap - ERR EXIT
