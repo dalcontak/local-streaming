@@ -302,7 +302,6 @@ services:
 $DOCKER_DEVICES
     # Necesario para que el decoder HW de HEVC (rkvdec) inicialice el contexto MPP.
     # Sin esto: "hevc_rkmpp: Failed to init MPP context: -1" -> fallback a decode por software.
-    # Ver docs/incidente-2026-10-03-decode-hevc.md
     security_opt:
       - systempaths=unconfined
       - apparmor=unconfined
