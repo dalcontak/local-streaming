@@ -277,6 +277,12 @@ get_docker_devices() {
         devices="${devices}      - /dev/mpp_service:/dev/mpp_service\n"
         has_device=true
     fi
+
+    # Rockchip RGA (acelerador 2D para scale_rkrga; evita conversión por CPU)
+    if [[ -e /dev/rga ]]; then
+        devices="${devices}      - /dev/rga:/dev/rga\n"
+        has_device=true
+    fi
     
     if [[ "$has_device" == "true" ]]; then
         echo "    devices:"
@@ -413,23 +419,42 @@ cleanup_on_error() {
         HWACCEL_OK=0
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
-            echo "  - Intento 1: HW decode + HW encode (full HW)"
-            # OJO: NO usar -hwaccel_output_format drm_prime. En esta combinación
-            # (decode rkmpp + encode h264_rkmpp) el decoder entrega nv15, formato
-            # que el encoder h264_rkmpp rechaza ("Unsupported input pixel format
-            # 'nv15'"). Con -hwaccel rkmpp sin ese flag ffmpeg inserta la
-            # conversión necesaria y el full-HW funciona.
-            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp \
-                -i "/videos/${JUST_FILENAME}" \
-                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
-                -c:a aac -b:a 128k \
-                -y \
-                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                HWACCEL_OK=1
-                echo "RKMPP full HW exitosa"
-            else
-                echo "  - Intento 2: SW decode + HW encode (fallback para codecs no soportados por HW)"
+
+            # Intento 1: full HW con conversión de formato en RGA.
+            # El decoder HEVC entrega nv15 (10-bit) en drm_prime y h264_rkmpp no
+            # acepta nv15; scale_rkrga convierte nv15->nv12 en el RGA. Sin RGA,
+            # ffmpeg hace esa conversión por software (~3 cores por job).
+            if [[ -e /dev/rga ]]; then
+                echo "  - Intento 1: HW decode + HW encode + conversión RGA (full HW)"
+                if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                    -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                    -i "/videos/${JUST_FILENAME}" \
+                    -vf scale_rkrga=format=nv12 \
+                    -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                    -c:a aac -b:a 128k \
+                    -y \
+                    "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                    HWACCEL_OK=1
+                    echo "RKMPP full HW exitosa (RGA)"
+                fi
+            fi
+
+            if [[ $HWACCEL_OK -eq 0 ]]; then
+                echo "  - Intento 2: HW decode + HW encode (conversión de formato por software)"
+                if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                    -hwaccel rkmpp \
+                    -i "/videos/${JUST_FILENAME}" \
+                    -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                    -c:a aac -b:a 128k \
+                    -y \
+                    "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                    HWACCEL_OK=1
+                    echo "RKMPP full HW exitosa"
+                fi
+            fi
+
+            if [[ $HWACCEL_OK -eq 0 ]]; then
+                echo "  - Intento 3: SW decode + HW encode (fallback para codecs no soportados por HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -i "/videos/${JUST_FILENAME}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
@@ -680,18 +705,31 @@ create_udev_rules() {
     log_info "Configurando reglas udev para dispositivos Rockchip..."
 
     local udev_file="/etc/udev/rules.d/99-rockchip-mpp.rules"
+    local rules=""
 
     if [[ -e /dev/mpp_service ]]; then
-        cat > ${udev_file} << EOF
-# Rockchip MPP (Media Process Platform) - acceso para contenedor Docker
-KERNEL=="mpp_service", MODE="0666"
-EOF
+        rules="${rules}# Rockchip MPP (Media Process Platform) - acceso para contenedor Docker\nKERNEL==\"mpp_service\", MODE=\"0666\"\n"
+    fi
+
+    # RGA: el proceso del contenedor (uid 1000, grupo render) necesita abrir
+    # /dev/rga para scale_rkrga; el nodo viene 0600 root:root por defecto.
+    if [[ -e /dev/rga ]]; then
+        rules="${rules}# Rockchip RGA (2D accelerator) - acceso para el grupo render\nSUBSYSTEM==\"misc\", KERNEL==\"rga\", MODE=\"0660\", GROUP=\"render\"\n"
+    fi
+
+    if [[ -n "${rules}" ]]; then
+        printf "%b" "${rules}" > ${udev_file}
         log_info "Regla udev creada: ${udev_file}"
         udevadm control --reload-rules 2>/dev/null || true
-        log_success "Regla udev para mpp_service configurada"
+        udevadm trigger --subsystem-match=misc --sysname-match=rga 2>/dev/null || true
+        log_success "Reglas udev Rockchip configuradas"
+    fi
 
-        # Aplicar permisos inmediatamente
-        chmod 666 /dev/mpp_service 2>/dev/null || true
+    # Aplicar permisos inmediatamente
+    chmod 666 /dev/mpp_service 2>/dev/null || true
+    if [[ -e /dev/rga ]]; then
+        chgrp render /dev/rga 2>/dev/null || true
+        chmod 660 /dev/rga 2>/dev/null || true
     fi
 }
 

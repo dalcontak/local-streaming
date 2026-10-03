@@ -45,7 +45,7 @@ Un solo contenedor Docker (`nyanmisaka/jellyfin:latest-rockchip`) que incluye:
 Para verificar los dispositivos disponibles:
 
 ```bash
-ls -la /dev/video* /dev/media* /dev/mpp_service /dev/dri/ /dev/dma_heap 2>&1
+ls -la /dev/video* /dev/media* /dev/mpp_service /dev/rga /dev/dri/ /dev/dma_heap 2>&1
 uname -r
 getent group render
 ```

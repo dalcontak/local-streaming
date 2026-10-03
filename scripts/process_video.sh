@@ -76,21 +76,42 @@ cleanup_on_error() {
         HWACCEL_OK=0
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
-            echo "  - Intento 1: HW decode + HW encode (full HW)"
-            # OJO: NO usar -hwaccel_output_format drm_prime. El decoder entrega
-            # nv15 y el encoder h264_rkmpp lo rechaza ("Unsupported input pixel
-            # format 'nv15'"). Con -hwaccel rkmpp a secas ffmpeg convierte solo.
-            if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp \
-                -i "/videos/${JUST_FILENAME}" \
-                -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
-                -c:a aac -b:a 128k \
-                -y \
-                "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
-                HWACCEL_OK=1
-                echo "RKMPP full HW exitosa"
-            else
-                echo "  - Intento 2: SW decode + HW encode (fallback para codecs no soportados por HW)"
+
+            # Intento 1: full HW con conversión de formato en RGA.
+            # El decoder HEVC entrega nv15 (10-bit) en drm_prime y h264_rkmpp no
+            # acepta nv15; scale_rkrga convierte nv15->nv12 en el RGA. Sin RGA,
+            # ffmpeg hace esa conversión por software (~3 cores por job).
+            if [[ -e /dev/rga ]]; then
+                echo "  - Intento 1: HW decode + HW encode + conversión RGA (full HW)"
+                if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                    -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                    -i "/videos/${JUST_FILENAME}" \
+                    -vf scale_rkrga=format=nv12 \
+                    -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                    -c:a aac -b:a 128k \
+                    -y \
+                    "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                    HWACCEL_OK=1
+                    echo "RKMPP full HW exitosa (RGA)"
+                fi
+            fi
+
+            if [[ $HWACCEL_OK -eq 0 ]]; then
+                echo "  - Intento 2: HW decode + HW encode (conversión de formato por software)"
+                if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
+                    -hwaccel rkmpp \
+                    -i "/videos/${JUST_FILENAME}" \
+                    -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
+                    -c:a aac -b:a 128k \
+                    -y \
+                    "/videos/${BASE_NAME}_recode.mp4" 2>&1; then
+                    HWACCEL_OK=1
+                    echo "RKMPP full HW exitosa"
+                fi
+            fi
+
+            if [[ $HWACCEL_OK -eq 0 ]]; then
+                echo "  - Intento 3: SW decode + HW encode (fallback para codecs no soportados por HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -i "/videos/${JUST_FILENAME}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
