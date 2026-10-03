@@ -368,13 +368,14 @@ cleanup_on_error() {
     # Eliminar archivo parcial de recodificación si existe
     rm -f "${PROCESS_DIR}/${BASE_NAME}_recode.mp4"
     # Devolver archivo original a entrada/ si sigue en procesando/
-    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+    if [[ -f "${PROCESS_DIR}/${VIDEO_FILE}" ]]; then
         echo "Devolviendo ${JUST_FILENAME} a entrada/..."
-        # Crear directorio destino en entrada si no existe
+        # Restaurar en la misma subcarpeta en la que estaba en entrada/
         mkdir -p "${INPUT_DIR}/${RELATIVE_PATH}"
-        mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${RELATIVE_PATH}/${JUST_FILENAME}"
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${INPUT_DIR}/${VIDEO_FILE}"
         echo "Archivo devuelto a entrada/ para reprocesar"
     fi
+    find "${PROCESS_DIR}" -mindepth 2 -type d -empty -delete 2>/dev/null || true
 }
 
 {
@@ -386,16 +387,19 @@ cleanup_on_error() {
     # Activar trap para limpiar en caso de error o interrupción
     trap cleanup_on_error ERR EXIT
     
-    # Mover archivo a procesando/ (siempre en la raíz, sin subcarpeta)
-    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
-    
-    # A partir de aquí, el archivo está en procesando/nombre.ext
-    # Docker monta procesando:/videos, así que la ruta Docker es /videos/nombre.ext
+    # Mover archivo a procesando/ conservando la subcarpeta (Peliculas/...,
+    # Series/...). Así no se pierde la estructura si el servicio se reinicia:
+    # recover_orphaned_files() puede devolverlo a su ruta original en entrada/.
+    mkdir -p "${PROCESS_DIR}/${RELATIVE_PATH}"
+    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
+
+    # Docker monta procesando:/videos, así que la ruta Docker es
+    # /videos/<ruta relativa del archivo>
     
     # Analizar codecs del video
     echo "Analizando codecs del video..."
-    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
     
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
     echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
@@ -428,7 +432,7 @@ cleanup_on_error() {
                 echo "  - Intento 1: HW decode + HW encode + conversión RGA (full HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -hwaccel rkmpp -hwaccel_output_format drm_prime \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -vf scale_rkrga=format=nv12 \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
@@ -443,7 +447,7 @@ cleanup_on_error() {
                 echo "  - Intento 2: HW decode + HW encode (conversión de formato por software)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -hwaccel rkmpp \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
                     -y \
@@ -456,7 +460,7 @@ cleanup_on_error() {
             if [[ $HWACCEL_OK -eq 0 ]]; then
                 echo "  - Intento 3: SW decode + HW encode (fallback para codecs no soportados por HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
                     -y \
@@ -473,7 +477,7 @@ cleanup_on_error() {
             echo "Intentando recodificación con V4L2 (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                 -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 \
-                -i "/videos/${JUST_FILENAME}" \
+                -i "/videos/${VIDEO_FILE}" \
                 -c:v h264_v4l2m2m -b:v 5M \
                 -c:a aac -b:a 128k \
                 -y \
@@ -487,7 +491,7 @@ cleanup_on_error() {
         
         if [[ $HWACCEL_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
-            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
+            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${VIDEO_FILE}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
@@ -499,6 +503,8 @@ cleanup_on_error() {
     else
         echo "Video ya tiene buenos codecs, sin recodificar"
         OUTPUT_NAME="${JUST_FILENAME}"
+        # Sacarlo de la subcarpeta para el movimiento común hacia final/
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${OUTPUT_NAME}"
     fi
     
     echo "Moviendo video a final..."
@@ -507,10 +513,11 @@ cleanup_on_error() {
     
     # Eliminar el original de procesando/ (ya está en final/). Evita que se
     # acumulen .mkv huérfanos que luego recover_orphaned_files() re-encolaría.
-    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
-        echo "Eliminando original de procesando/: ${JUST_FILENAME}"
-        rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    if [[ -f "${PROCESS_DIR}/${VIDEO_FILE}" ]]; then
+        echo "Eliminando original de procesando/: ${VIDEO_FILE}"
+        rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
     fi
+    find "${PROCESS_DIR}" -mindepth 2 -type d -empty -delete 2>/dev/null || true
     
     # Desactivar trap - proceso exitoso
     trap - ERR EXIT
@@ -577,32 +584,36 @@ cleanup_stale_locks() {
 }
 
 # Función para recuperar archivos huérfanos de procesando/
-# Si el servicio se interrumpió, pueden quedar archivos a medio procesar
+# Si el servicio se interrumpió, pueden quedar archivos a medio procesar.
+# Recorre procesando/ de forma recursiva y devuelve cada archivo a su misma
+# subcarpeta en entrada/. (Antes se aplanaban a la raíz y se perdía la
+# estructura Series/.../Season XX/, así el video terminaba en la raíz de final/.)
 recover_orphaned_files() {
     local file
-    local filename
+    local rel
     local recovered=0
-    
-    for file in "$PROCESS_DIR"/*; do
-        [[ -e "$file" ]] || continue
-        [[ -f "$file" ]] || continue
-        filename=$(basename "$file")
-        [[ "$filename" == .* ]] && continue
-        [[ "$filename" == .keep ]] && continue
-        
+
+    while IFS= read -r -d '' file; do
+        rel="${file#${PROCESS_DIR}/}"
+        [[ "$(basename "$rel")" == .* ]] && continue
+
         # Eliminar archivos parciales de recodificación
-        if [[ "$filename" == *_recode.mp4 ]]; then
-            echo "$(date): Eliminando archivo parcial de recodificación: $filename"
+        if [[ "$rel" == *_recode.mp4 ]]; then
+            echo "$(date): Eliminando archivo parcial de recodificación: $rel"
             rm -f "$file"
             continue
         fi
-        
-        # Devolver archivos originales a entrada/
-        echo "$(date): Recuperando archivo huérfano: $filename -> entrada/"
-        mv "$file" "${INPUT_DIR}/${filename}"
+
+        # Devolver el original a entrada/ respetando su subcarpeta
+        echo "$(date): Recuperando archivo huérfano: $rel -> entrada/$rel"
+        mkdir -p "${INPUT_DIR}/$(dirname "$rel")"
+        mv "$file" "${INPUT_DIR}/${rel}"
         recovered=$((recovered + 1))
-    done
-    
+    done < <(find "$PROCESS_DIR" -mindepth 1 -type f -print0)
+
+    # Limpiar subcarpetas vacías que hayan quedado en procesando/
+    find "$PROCESS_DIR" -mindepth 2 -type d -empty -delete 2>/dev/null || true
+
     if [[ $recovered -gt 0 ]]; then
         echo "$(date): $recovered archivo(s) recuperado(s) de procesando/ a entrada/"
     fi

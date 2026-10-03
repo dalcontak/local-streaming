@@ -28,16 +28,16 @@ OUTPUT_NAME="${BASE_NAME}.mp4"
 cleanup_on_error() {
     echo "ERROR: Proceso interrumpido o fallido para ${JUST_FILENAME}"
     rm -f "${PROCESS_DIR}/${BASE_NAME}_recode.mp4"
-    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+    if [[ -f "${PROCESS_DIR}/${VIDEO_FILE}" ]]; then
         echo "Devolviendo ${JUST_FILENAME} a entrada/..."
-        if [[ -n "$REL_DIR" ]]; then
+        # Restaurar en la misma subcarpeta en la que estaba en entrada/
+        if [[ -n "${REL_DIR}" ]]; then
             mkdir -p "${INPUT_DIR}/${REL_DIR}"
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${REL_DIR}/${JUST_FILENAME}"
-        else
-            mv "${PROCESS_DIR}/${JUST_FILENAME}" "${INPUT_DIR}/${JUST_FILENAME}"
         fi
+        mv "${PROCESS_DIR}/${VIDEO_FILE}" "${INPUT_DIR}/${VIDEO_FILE}"
         echo "Archivo devuelto a entrada/ para reprocesar"
     fi
+    find "${PROCESS_DIR}" -mindepth 2 -type d -empty -delete 2>/dev/null || true
 }
 
 {
@@ -50,11 +50,14 @@ cleanup_on_error() {
 
     trap cleanup_on_error ERR EXIT
 
-    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${JUST_FILENAME}"
+    # Conservar la subcarpeta en procesando/ para no perder la estructura si
+    # el servicio se reinicia (recover_orphaned_files la restaura en entrada/).
+    mkdir -p "${PROCESS_DIR}/${REL_DIR}"
+    mv "${INPUT_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${VIDEO_FILE}"
 
     echo "Analizando codecs del video..."
-    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
-    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${JUST_FILENAME}" 2>/dev/null | head -1)
+    VIDEO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams v:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
+    AUDIO_CODEC=$(docker exec ${DOCKER_CONTAINER} ${FFPROBE_BIN} -v error -select_streams a:0 -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 "/videos/${VIDEO_FILE}" 2>/dev/null | head -1)
 
     echo "Video codec: ${VIDEO_CODEC:-desconocido}"
     echo "Audio codec: ${AUDIO_CODEC:-desconocido}"
@@ -85,7 +88,7 @@ cleanup_on_error() {
                 echo "  - Intento 1: HW decode + HW encode + conversión RGA (full HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -hwaccel rkmpp -hwaccel_output_format drm_prime \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -vf scale_rkrga=format=nv12 \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
@@ -100,7 +103,7 @@ cleanup_on_error() {
                 echo "  - Intento 2: HW decode + HW encode (conversión de formato por software)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                     -hwaccel rkmpp \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
                     -y \
@@ -113,7 +116,7 @@ cleanup_on_error() {
             if [[ $HWACCEL_OK -eq 0 ]]; then
                 echo "  - Intento 3: SW decode + HW encode (fallback para codecs no soportados por HW)"
                 if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                    -i "/videos/${JUST_FILENAME}" \
+                    -i "/videos/${VIDEO_FILE}" \
                     -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                     -c:a aac -b:a 128k \
                     -y \
@@ -130,7 +133,7 @@ cleanup_on_error() {
             echo "Intentando recodificación con V4L2 (aceleración hardware Rockchip)..."
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
                 -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 \
-                -i "/videos/${JUST_FILENAME}" \
+                -i "/videos/${VIDEO_FILE}" \
                 -c:v h264_v4l2m2m -b:v 5M \
                 -c:a aac -b:a 128k \
                 -y \
@@ -144,7 +147,7 @@ cleanup_on_error() {
 
         if [[ $HWACCEL_OK -eq 0 ]]; then
             echo "Recodificando con libx264 (software)..."
-            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${JUST_FILENAME}" \
+            docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} -i "/videos/${VIDEO_FILE}" \
                 -c:v libx264 -preset ${FFMPEG_PRESET} -crf ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
                 -y \
@@ -156,6 +159,10 @@ cleanup_on_error() {
     else
         echo "Video ya tiene buenos codecs, sin recodificar"
         OUTPUT_NAME="${JUST_FILENAME}"
+        if [[ -n "${REL_DIR}" ]]; then
+            # Sacarlo de la subcarpeta para el movimiento común hacia final/
+            mv "${PROCESS_DIR}/${VIDEO_FILE}" "${PROCESS_DIR}/${OUTPUT_NAME}"
+        fi
     fi
 
     echo "Moviendo video a final..."
@@ -168,10 +175,11 @@ cleanup_on_error() {
 
     # Eliminar el original de procesando/ (ya está en final/). Evita que se
     # acumulen .mkv huérfanos que luego recover_orphaned_files() re-encolaría.
-    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
-        echo "Eliminando original de procesando/: ${JUST_FILENAME}"
-        rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    if [[ -f "${PROCESS_DIR}/${VIDEO_FILE}" ]]; then
+        echo "Eliminando original de procesando/: ${VIDEO_FILE}"
+        rm -f "${PROCESS_DIR}/${VIDEO_FILE}"
     fi
+    find "${PROCESS_DIR}" -mindepth 2 -type d -empty -delete 2>/dev/null || true
 
     trap - ERR EXIT
 
