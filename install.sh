@@ -528,9 +528,9 @@ PROCESS_EOF
 # Configuración del sistema de streaming
 
 # Número máximo de procesos paralelos para procesamiento de videos
-# 1 = secuencial (recomendado para Orange Pi 5 Plus)
-# 2-3 = paralelo (si tienes más RAM/CPU)
-MAX_PARALLEL_PROCES=2
+# Con decode/encode + conversión RGA por hardware, cada job usa ~1 core;
+# 4 es seguro en RK3588 (8 cores). Bajar a 1-2 para priorizar otras tareas.
+MAX_PARALLEL_PROCES=4
 
 # Codec de video para recodificación: h264, h265
 VIDEO_CODEC_TARGET="h264"
