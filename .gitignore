@@ -1,0 +1,4 @@
+# Notas locales de instalación y troubleshooting (no versionar)
+# Específicas de este equipo (Orange Pi 5 Plus / arm3). Ver docs/troubleshooting-orangepi.md
+docs/troubleshooting-orangepi.md
+docs/incidente-*.md

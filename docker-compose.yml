@@ -15,6 +15,11 @@ services:
     devices:
       - /dev/dri:/dev/dri
       - /dev/mpp_service:/dev/mpp_service
+    # Necesario para que el decoder HW de HEVC (rkvdec) inicialice el contexto MPP.
+    # Sin esto: "hevc_rkmpp: Failed to init MPP context: -1" -> decode por software.
+    security_opt:
+      - systempaths=unconfined
+      - apparmor=unconfined
     volumes:
       - /opt/streaming/configs/jellyfin:/config
       - /opt/streaming/data/jellyfin/cache:/cache

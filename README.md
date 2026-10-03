@@ -1,92 +1,85 @@
-# Stack de Streaming Local - Guía de Uso
+# Stack de Streaming Local
 
-## Descripción
+Sistema de streaming local automatizado para Orange Pi 5 Plus (Rockchip RK3588):
+recibe videos desde carpetas locales o NFS, los recodifica a **H.264/AAC**
+(usando aceleración hardware cuando está disponible) y publica el resultado en
+**Jellyfin**.
 
-Sistema de streaming local automatizado con recodificación de video, ejecutado en Orange Pi 5 Plus.
+## Características
 
-## Pre-requisitos
-
-### Kernel de Armbian
-
-El `docker-compose.yml` está configurado para el kernel **current** de Armbian (`linux-image-current-rockchip-rk3588`), que expone los codecs via **V4L2** (`/dev/video*`, `/dev/media*`).
-
-Si usas el kernel **vendor** (`linux-image-vendor-rk35xx`), los codecs se exponen via `/dev/mpp_service` en lugar de V4L2. Debes modificar la sección `devices:` del `docker-compose.yml`:
-
-```yaml
-# Para kernel vendor (mpp_service, sin V4L2):
-devices:
-  - /dev/dri:/dev/dri
-  - /dev/mpp_service:/dev/mpp_service
-#  - /dev/dma_heap:/dev/dma_heap   # Opcional, si existe
-```
-
-Para verificar qué kernel tienes:
-```bash
-uname -r
-# "6.1.115-current-rockchip-rk3588" → current
-# "6.1.115-vendor-rk35xx"          → vendor
-```
-
-Para ver qué dispositivos de video están disponibles:
-```bash
-ls -la /dev/video* /dev/media* /dev/mpp_service /dev/dri/ /dev/dma_heap 2>&1
-```
-
-### Grupo Render
-
-El `docker-compose.yml` referencia el grupo `render` con ID `122` (línea 10). Este ID varía según la distribución. Verifica el ID correcto en tu sistema:
-
-```bash
-getent group render
-# render:x:993   → Cambiar "122" por "993" en docker-compose.yml
-```
-
-### Aceleración Hardware
-
-El contenedor `nyanmisaka/jellyfin:latest-rockchip` incluye FFmpeg compilado con soporte para RK3588 via V4L2 (kernel current) o rkmpp (kernel vendor). Si la aceleración hardware no está disponible, Jellyfin hará transcodificación por software (libx264), lo que consume mucha CPU.
+- **Procesamiento automático**: un servicio (`streaming-monitor`) vigila la
+  carpeta de entrada y lanza la recodificación sin intervención manual.
+- **Clasificación automática** de Películas y Series según la carpeta de origen.
+- **Aceleración hardware** Rockchip (RKMPP en kernel vendor, V4L2 en kernel
+  current) con *fallback* automático a `libx264` (software).
+- **Jellyfin integrado** en el mismo contenedor que sirve el catálogo.
+- **Entrada por NFS** opcional para montar las carpetas desde otro equipo.
+- **Configuración sencilla** vía `scripts/config.sh` (paralelismo, codecs, calidad).
 
 ## Arquitectura
 
 ```
 [Usuario] → Copia video → [entrada/] → [Monitor] → [procesando/] → [final/] → [Jellyfin]
-                                            ↓
-                                   [FFmpeg (V4L2)]
-                                   (dentro de Jellyfin)
+                                             ↓
+                                  [FFmpeg (RKMPP / V4L2)]
+                                  (dentro del contenedor Jellyfin)
 ```
 
 Un solo contenedor Docker (`nyanmisaka/jellyfin:latest-rockchip`) que incluye:
-- Jellyfin como servidor de media
-- FFmpeg con aceleración hardware V4L2 para Rockchip RK3588 (kernel 6.x)
-- Fallback automático a libx264 (software) si V4L2 no está disponible
 
-## Instalación Rápida
+- Jellyfin como servidor de media.
+- FFmpeg con aceleración hardware para Rockchip RK3588.
+- Fallback automático a `libx264` (software) si el hardware no está disponible.
 
-1. **Descargar script de instalación:**
+## Requisitos
+
+- **Hardware**: Orange Pi 5 Plus (RK3588) o placa RK3588 equivalente.
+- **Sistema**: Armbian con kernel que exponga los codecs Rockchip:
+  - kernel **vendor** (`linux-image-vendor-rk35xx`): codecs vía `/dev/mpp_service`.
+  - kernel **current** (`linux-image-current-rockchip-rk3588`): codecs vía V4L2
+    (`/dev/video*`, `/dev/media*`).
+- **Docker** y **Docker Compose** instalados.
+- Grupo **`render`** en el sistema (su ID se ajusta en el compose).
+- **FFmpeg con soporte Rockchip**: ya incluido en la imagen de Jellyfin.
+
+Para verificar los dispositivos disponibles:
+
+```bash
+ls -la /dev/video* /dev/media* /dev/mpp_service /dev/dri/ /dev/dma_heap 2>&1
+uname -r
+getent group render
+```
+
+## Instalación
+
+1. **Clonar el repositorio en el equipo:**
+
    ```bash
    cd /opt
    git clone <repositorio> streaming
    cd streaming
    ```
 
-2. **Ejecutar instalación:**
+2. **Ejecutar la instalación:**
+
    ```bash
    chmod +x install.sh
    sudo ./install.sh
    ```
 
 3. **Configurar Jellyfin:**
-    - Acceder a `http://<IP-ORANGEPI>:8096`
-    - Completar configuración inicial
-    - Crear biblioteca de **Películas** apuntando a `/media/Peliculas`
-    - Crear biblioteca de **Series** apuntando a `/media/Series`
+   - Acceder a `http://<IP-ORANGEPI>:8096`.
+   - Completar la configuración inicial.
+   - Crear biblioteca de **Películas** apuntando a `/media/Peliculas`.
+   - Crear biblioteca de **Series** apuntando a `/media/Series`.
 
-## Uso Básico
+## Uso
 
-### Agregar Videos al Sistema
+### Agregar videos al sistema
 
-El sistema clasifica automáticamente las películas y series según la carpeta de origen.
-
-**IMPORTANTE**: Los archivos deben tener nombres que Jellyfin pueda reconocer para descargar metadata, carátulas y descripciones.
+El sistema clasifica automáticamente las películas y series según la carpeta de
+origen. **Importante**: los nombres deben ser reconocibles por Jellyfin para
+descargar metadata, carátulas y descripciones.
 
 #### Naming para Películas
 
@@ -97,9 +90,10 @@ Nombre de la Pelicula (Año).ext
 ```
 
 Ejemplos:
+
 ```bash
 cp pelicula.mp4 "/opt/streaming/entrada/Peliculas/Inception (2010).mp4"
-cp otra.mkv "/opt/streaming/entrada/Peliculas/The Matrix (1999).mkv"
+cp otra.mkv    "/opt/streaming/entrada/Peliculas/The Matrix (1999).mkv"
 cp archivo.avi "/opt/streaming/entrada/Peliculas/Coco (2017).avi"
 ```
 
@@ -111,7 +105,7 @@ Copiar a `/opt/streaming/entrada/Series/` con el formato:
 Nombre de la Serie S01E01.ext
 ```
 
-O mejor aún, organizados en subcarpetas:
+O mejor, organizados en subcarpetas:
 
 ```
 entrada/Series/Breaking Bad/S01E01.mp4
@@ -120,6 +114,7 @@ entrada/Series/The Office/S02E05.mp4
 ```
 
 Ejemplos:
+
 ```bash
 # Opción 1: nombre plano
 cp episodio.mp4 "/opt/streaming/entrada/Series/Breaking Bad S01E01.mp4"
@@ -138,84 +133,88 @@ EP01.mp4                         # Sin nombre de serie
 rip_bluray_final_v2.mkv          # Sin información útil
 ```
 
-**Nota**: El sistema detecta automáticamente y procesa los videos en ambas carpetas.
-
-3. **Procesamiento manual**
-    ```bash
-    # Para película
-    /opt/streaming/scripts/process_video.sh "Peliculas/nombre_pelicula.mp4"
-    
-    # Para serie
-    /opt/streaming/scripts/process_video.sh "Series/S01E01_episodio.mp4"
-    ```
-
-4. **Via NFS**
-    Configurar cliente NFS montando las carpetas compartidas:
-    - `/mnt/nfs/peliculas` → `/opt/streaming/entrada/Peliculas`
-    - `/mnt/nfs/series` → `/opt/streaming/entrada/Series`
-
-### Ver Progreso del Procesamiento
+### Procesamiento manual
 
 ```bash
-# Ver logs en tiempo real
+# Para película
+/opt/streaming/scripts/process_video.sh "Peliculas/nombre_pelicula.mp4"
+
+# Para serie
+/opt/streaming/scripts/process_video.sh "Series/S01E01_episodio.mp4"
+```
+
+### Entrada vía NFS
+
+Montar las carpetas compartidas del servidor y enlazarlas a la entrada:
+
+- `/mnt/nfs/peliculas` → `/opt/streaming/entrada/Peliculas`
+- `/mnt/nfs/series` → `/opt/streaming/entrada/Series`
+
+Ver la sección [Configuración NFS](#configuración-nfs-opcional).
+
+### Ver progreso del procesamiento
+
+```bash
+# Ver logs de procesamiento en tiempo real
 tail -f /opt/streaming/logs/process_*.log
 
 # Ver log de monitoreo
 tail -f /opt/streaming/logs/monitor.log
 ```
 
-### Gestionar Servicios
+### Gestionar servicios
 
 ```bash
-# Ver estado
 cd /opt/streaming
+
+# Estado
 docker compose ps
 
-# Reiniciar servicios
+# Reiniciar
 docker compose restart
 
-# Detener servicios
+# Detener
 docker compose down
 
-# Iniciar servicios
+# Iniciar
 docker compose up -d
 
-# Ver logs de contenedores
+# Logs del contenedor Jellyfin
 docker logs jellyfin
 ```
 
-## Directorios del Sistema
+## Directorios del sistema
 
 ```
 /opt/streaming/
 ├── entrada/              # Videos a procesar (input)
-│   ├── Peliculas/       # Carpeta para películas
-│   └── Series/          # Carpeta para series
-├── procesando/          # Videos en proceso de transcodificación
-├── final/               # Videos procesados (input para Jellyfin)
-│   ├── Peliculas/       # Películas procesadas
-│   └── Series/          # Series procesadas
-├── scripts/             # Scripts de automatización
-│   ├── config.sh        # Configuración del sistema
-│   ├── process_video.sh # Procesamiento individual
-│   └── monitor.sh       # Monitoreo continuo
-├── configs/             # Configuraciones
-│   └── jellyfin/        # Configuración Jellyfin
-├── data/                # Datos
-│   └── jellyfin/cache/  # Cache Jellyfin
-├── logs/                # Logs del sistema
-└── docker-compose.yml   # Configuración Docker
+│   ├── Peliculas/        # Carpeta para películas
+│   └── Series/           # Carpeta para series
+├── procesando/           # Videos en proceso de transcodificación
+├── final/                # Videos procesados (input para Jellyfin)
+│   ├── Peliculas/        # Películas procesadas
+│   └── Series/           # Series procesadas
+├── scripts/              # Scripts de automatización
+│   ├── config.sh         # Configuración del sistema
+│   ├── process_video.sh  # Procesamiento individual
+│   └── monitor.sh        # Monitoreo continuo
+├── configs/              # Configuraciones
+│   └── jellyfin/         # Configuración Jellyfin
+├── data/                 # Datos
+│   └── jellyfin/cache/   # Cache Jellyfin
+├── logs/                 # Logs del sistema
+└── docker-compose.yml    # Configuración Docker
 ```
 
-## Configuración Avanzada
+## Configuración avanzada
 
-### Configuración General
+### Configuración general
 
 Editar `/opt/streaming/scripts/config.sh`:
 
 ```bash
 # Número máximo de procesos paralelos (1 = secuencial, 2+ = paralelo)
-MAX_PARALLEL_PROCES=1
+MAX_PARALLEL_PROCES=2
 
 # Codec objetivo (h264, h265)
 VIDEO_CODEC_TARGET="h264"
@@ -228,35 +227,39 @@ VIDEO_CRF=23
 FFMPEG_PRESET="medium"
 ```
 
-**Importante**: Después de modificar la configuración, reinicia el servicio de monitoreo:
+**Importante**: después de modificar la configuración, reinicia el servicio de
+monitoreo:
 
 ```bash
 systemctl restart streaming-monitor.service
 ```
 
-### Ajustar Procesamiento Paralelo
+### Ajustar procesamiento paralelo
 
-Para procesar múltiples videos simultáneamente, edita `/opt/streaming/scripts/config.sh`:
+Editar `/opt/streaming/scripts/config.sh`:
 
 ```bash
 MAX_PARALLEL_PROCES=2  # Procesar hasta 2 videos al mismo tiempo
 ```
 
-**Recomendaciones para Orange Pi 5 Plus**:
-- **4GB RAM**: 1 proceso (secuencial)
-- **8GB+ RAM**: 2-3 procesos (paralelo)
+Recomendaciones para Orange Pi 5 Plus:
 
-### Ajustar Calidad de Video
+- **4 GB RAM**: 1 proceso (secuencial).
+- **8 GB+ RAM**: 2-3 procesos (paralelo).
+
+### Ajustar calidad de video
 
 Editar `/opt/streaming/scripts/config.sh`:
+
 ```bash
-VIDEO_CRF=23              # Menor número = mejor calidad (18-28)
+VIDEO_CRF=23             # Menor número = mejor calidad (rango 18-28)
 FFMPEG_PRESET="medium"   # ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
 ```
 
-### Configurar Zona Horaria
+### Configurar zona horaria
 
 Editar `docker-compose.yml`:
+
 ```yaml
 environment:
   - TZ=America/Mexico_City  # Cambiar a tu zona horaria
@@ -264,7 +267,7 @@ environment:
 
 ## Mantenimiento
 
-### Actualizar Imágenes Docker
+### Actualizar imágenes Docker
 
 ```bash
 cd /opt/streaming
@@ -272,21 +275,21 @@ docker compose pull
 docker compose up -d
 ```
 
-### Limpiar Cache de Jellyfin
+### Limpiar cache de Jellyfin
 
 ```bash
 rm -rf /opt/streaming/data/jellyfin/cache/*
 docker compose restart jellyfin
 ```
 
-### Limpiar Logs Antiguos
+### Limpiar logs antiguos
 
 ```bash
 # Eliminar logs mayores a 7 días
 find /opt/streaming/logs -name "*.log" -mtime +7 -delete
 ```
 
-### Verificar Espacio en Disco
+### Verificar espacio en disco
 
 ```bash
 df -h /opt/streaming
@@ -294,129 +297,25 @@ du -sh /opt/streaming/final/
 du -sh /opt/streaming/data/
 ```
 
-## Troubleshooting
+## Rendimiento y optimización
 
-### Jellyfin no inicia
+Recomendaciones para Orange Pi 5 Plus:
 
-```bash
-# Ver logs
-docker logs jellyfin
+- **CRF FFmpeg**: `23` (buena calidad sin sacrificar velocidad).
+- **Preset FFmpeg**: `medium`.
+- **Procesamiento concurrente**: no superar 1-2 videos simultáneos con 4 GB RAM.
 
-# Verificar permisos
-ls -la /opt/streaming/configs/jellyfin/
-
-# Reiniciar
-docker compose restart jellyfin
-```
-
-### FFmpeg falla al recodificar
+Monitorear recursos:
 
 ```bash
-# Verificar dispositivos V4L2
-ls -la /dev/video* /dev/media* /dev/dri/ /dev/dma_heap
-
-# Verificar grupo render y video
-getent group render
-getent group video
-
-# Verificar que V4L2 está disponible en el contenedor
-docker exec jellyfin ffmpeg -encoders 2>/dev/null | grep v4l2
-
-# Probar recodificación manual con V4L2
-docker exec jellyfin ffmpeg -init_hw_device v4l2m2m_enc=v4l2m2m_enc0:/dev/video3 -i /videos/test.mp4 -c:v h264_v4l2m2m -b:v 5M -y /videos/test_out.mp4
-
-# Verificar decodificadores V4L2
-docker exec jellyfin ffmpeg -decoders 2>/dev/null | grep v4l2
-```
-
-### Videos no se procesan automáticamente
-
-```bash
-# Verificar servicio de monitoreo
-systemctl status streaming-monitor
-
-# Ver logs de monitoreo
-tail -f /opt/streaming/logs/monitor.log
-
-# Reiniciar servicio
-systemctl restart streaming-monitor
-```
-
-### Aceleración Hardware No Disponible
-
-```bash
-# Verificar dispositivos V4L2 (kernel 6.x en RK3588)
-ls -la /dev/video* /dev/media* /dev/dri/ /dev/dma_heap
-
-# Verificar kernel
-uname -r
-
-# Verificar grupos
-groups $(whoami)
-
-# Agregar usuario a grupos
-sudo usermod -aG docker,render,video $(whoami)
-
-# Verificar que el contenedor tiene acceso a /dev/video*
-docker exec jellyfin ls -la /dev/video*
-
-# Verificar encoders V4L2 disponibles
-docker exec jellyfin ffmpeg -encoders 2>/dev/null | grep v4l2
-
-# Si V4L2 no funciona, el sistema usa libx264 (software) automáticamente
-# Re-iniciar sesión o reiniciar
-sudo reboot
-```
-
-## Configuración NFS (Opcional)
-
-Si prefieres montar las carpetas de videos via NFS:
-
-```bash
-# Crear puntos de montaje
-sudo mkdir -p /mnt/nfs/peliculas
-sudo mkdir -p /mnt/nfs/series
-
-# Agregar a /etc/fstab
-echo "<SERVER_IP>:/path/to/peliculas /mnt/nfs/peliculas nfs defaults 0 0" | sudo tee -a /etc/fstab
-echo "<SERVER_IP>:/path/to/series /mnt/nfs/series nfs defaults 0 0" | sudo tee -a /etc/fstab
-
-# Montar
-sudo mount -a
-
-# Crear symlinks a las carpetas de entrada
-sudo ln -sf /mnt/nfs/peliculas /opt/streaming/entrada/Peliculas
-sudo ln -sf /mnt/nfs/series /opt/streaming/entrada/Series
-```
-
-## Rendimiento y Optimización
-
-### Recomendaciones para Orange Pi 5 Plus
-
-- **CRF FFmpeg**: `23` (calidad buena sin sacrificar velocidad)
-- **Preset FFmpeg**: `medium`
-- **Concurrent processing**: Evitar procesar más de 1-2 videos simultáneamente en 4GB RAM
-
-### Monitorear Recursos
-
-```bash
-# Uso de CPU
-htop
-
-# Uso de memoria
-free -h
-
-# Uso de disco
-df -h
-
-# Uso de GPU (si aplica)
-sudo apt install mesa-utils
-glxinfo | grep "OpenGL renderer"
+htop              # Uso de CPU
+free -h           # Uso de memoria
+df -h             # Uso de disco
 ```
 
 ## Seguridad
 
-### Configurar Firewall
+### Configurar firewall
 
 ```bash
 # Habilitar firewall
@@ -425,32 +324,55 @@ sudo ufw enable
 # Ver estado
 sudo ufw status
 
-# Permitir puertos específicos
+# Permitir puertos
 sudo ufw allow 8096/tcp  # Jellyfin
 sudo ufw allow 1900/udp  # DLNA
 sudo ufw allow 7359/udp  # DLNA Discovery
 ```
 
-### Backup de Configuración
+### Backup de configuración
 
 ```bash
 # Backup completo
-tar -czf streaming_backup_$(date +%Y%m%d).tar.gz /opt/streaming/configs/ /opt/streaming/scripts/
+tar -czf streaming_backup_$(date +%Y%m%d).tar.gz \
+  /opt/streaming/configs/ /opt/streaming/scripts/
 
 # Backup Jellyfin config
-tar -czf jellyfin_config_$(date +%Y%m%d).tar.gz /opt/streaming/configs/jellyfin/
+tar -czf jellyfin_config_$(date +%Y%m%d).tar.gz \
+  /opt/streaming/configs/jellyfin/
 ```
 
-## Actualización del Sistema
+## Configuración NFS (opcional)
 
-### Actualizar Scripts
+Si prefieres montar las carpetas de videos vía NFS:
+
+```bash
+# Crear puntos de montaje
+sudo mkdir -p /mnt/nfs/peliculas
+sudo mkdir -p /mnt/nfs/series
+
+# Agregar a /etc/fstab
+echo "<SERVER_IP>:/path/to/peliculas /mnt/nfs/peliculas nfs defaults 0 0" | sudo tee -a /etc/fstab
+echo "<SERVER_IP>:/path/to/series    /mnt/nfs/series    nfs defaults 0 0" | sudo tee -a /etc/fstab
+
+# Montar
+sudo mount -a
+
+# Crear symlinks a las carpetas de entrada
+sudo ln -sf /mnt/nfs/peliculas /opt/streaming/entrada/Peliculas
+sudo ln -sf /mnt/nfs/series    /opt/streaming/entrada/Series
+```
+
+## Actualización del sistema
+
+### Actualizar scripts
 
 ```bash
 cd /opt/streaming
 git pull
 ```
 
-### Actualizar Sistema Operativo
+### Actualizar sistema operativo
 
 ```bash
 sudo apt update
@@ -458,7 +380,7 @@ sudo apt upgrade -y
 sudo reboot
 ```
 
-## Soporte y Documentación
+## Soporte y documentación
 
 - **Jellyfin**: https://jellyfin.org/docs/
 - **FFmpeg**: https://ffmpeg.org/documentation.html
@@ -474,7 +396,7 @@ Este sistema utiliza software open-source:
 
 ## Contribuciones
 
-Para mejoras o reporte de bugs, por favor utiliza el sistema de tickets del proyecto.
+Para mejoras o reporte de bugs, utiliza el sistema de tickets del proyecto.
 
 ---
 

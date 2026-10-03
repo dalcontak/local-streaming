@@ -77,8 +77,11 @@ cleanup_on_error() {
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
             echo "  - Intento 1: HW decode + HW encode (full HW)"
+            # OJO: NO usar -hwaccel_output_format drm_prime. El decoder entrega
+            # nv15 y el encoder h264_rkmpp lo rechaza ("Unsupported input pixel
+            # format 'nv15'"). Con -hwaccel rkmpp a secas ffmpeg convierte solo.
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                -hwaccel rkmpp \
                 -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
@@ -140,6 +143,13 @@ cleanup_on_error() {
         mv "${PROCESS_DIR}/${OUTPUT_NAME}" "${OUTPUT_DIR}/${REL_DIR}/${OUTPUT_NAME}"
     else
         mv "${PROCESS_DIR}/${OUTPUT_NAME}" "${OUTPUT_DIR}/${OUTPUT_NAME}"
+    fi
+
+    # Eliminar el original de procesando/ (ya está en final/). Evita que se
+    # acumulen .mkv huérfanos que luego recover_orphaned_files() re-encolaría.
+    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+        echo "Eliminando original de procesando/: ${JUST_FILENAME}"
+        rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
     fi
 
     trap - ERR EXIT

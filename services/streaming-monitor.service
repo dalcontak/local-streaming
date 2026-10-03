@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=dalcon
 WorkingDirectory=/opt/streaming
 ExecStart=/opt/streaming/scripts/monitor.sh
 Restart=always

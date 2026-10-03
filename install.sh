@@ -300,6 +300,12 @@ services:
       - '${RENDER_GROUP_ID}'
       - '44'
 $DOCKER_DEVICES
+    # Necesario para que el decoder HW de HEVC (rkvdec) inicialice el contexto MPP.
+    # Sin esto: "hevc_rkmpp: Failed to init MPP context: -1" -> fallback a decode por software.
+    # Ver docs/incidente-2026-10-03-decode-hevc.md
+    security_opt:
+      - systempaths=unconfined
+      - apparmor=unconfined
     volumes:
       - ${JELLYFIN_CONFIG}:/config
       - ${JELLYFIN_CACHE}:/cache
@@ -409,8 +415,13 @@ cleanup_on_error() {
         if [[ -e /dev/mpp_service ]]; then
             echo "Intentando recodificación con RKMPP (aceleración hardware Rockchip)..."
             echo "  - Intento 1: HW decode + HW encode (full HW)"
+            # OJO: NO usar -hwaccel_output_format drm_prime. En esta combinación
+            # (decode rkmpp + encode h264_rkmpp) el decoder entrega nv15, formato
+            # que el encoder h264_rkmpp rechaza ("Unsupported input pixel format
+            # 'nv15'"). Con -hwaccel rkmpp sin ese flag ffmpeg inserta la
+            # conversión necesaria y el full-HW funciona.
             if docker exec ${DOCKER_CONTAINER} ${FFMPEG_BIN} \
-                -hwaccel rkmpp -hwaccel_output_format drm_prime \
+                -hwaccel rkmpp \
                 -i "/videos/${JUST_FILENAME}" \
                 -c:v h264_rkmpp -qp_init ${VIDEO_CRF} \
                 -c:a aac -b:a 128k \
@@ -470,6 +481,13 @@ cleanup_on_error() {
     mkdir -p "${OUTPUT_DIR}/${RELATIVE_PATH}"
     mv "${PROCESS_DIR}/${OUTPUT_NAME}" "${OUTPUT_DIR}/${RELATIVE_PATH}/${OUTPUT_NAME}"
     
+    # Eliminar el original de procesando/ (ya está en final/). Evita que se
+    # acumulen .mkv huérfanos que luego recover_orphaned_files() re-encolaría.
+    if [[ -f "${PROCESS_DIR}/${JUST_FILENAME}" ]]; then
+        echo "Eliminando original de procesando/: ${JUST_FILENAME}"
+        rm -f "${PROCESS_DIR}/${JUST_FILENAME}"
+    fi
+    
     # Desactivar trap - proceso exitoso
     trap - ERR EXIT
     
@@ -488,7 +506,7 @@ PROCESS_EOF
 # Número máximo de procesos paralelos para procesamiento de videos
 # 1 = secuencial (recomendado para Orange Pi 5 Plus)
 # 2-3 = paralelo (si tienes más RAM/CPU)
-MAX_PARALLEL_PROCES=1
+MAX_PARALLEL_PROCES=2
 
 # Codec de video para recodificación: h264, h265
 VIDEO_CODEC_TARGET="h264"
@@ -667,7 +685,7 @@ create_udev_rules() {
     if [[ -e /dev/mpp_service ]]; then
         cat > ${udev_file} << EOF
 # Rockchip MPP (Media Process Platform) - acceso para contenedor Docker
-SUBSYSTEM=="mpp_service", MODE="0666"
+KERNEL=="mpp_service", MODE="0666"
 EOF
         log_info "Regla udev creada: ${udev_file}"
         udevadm control --reload-rules 2>/dev/null || true
@@ -689,7 +707,7 @@ After=network.target docker.service
 
 [Service]
 Type=simple
-User=root
+User=dalcon
 ExecStart=/opt/streaming/scripts/monitor.sh
 Restart=always
 RestartSec=10
