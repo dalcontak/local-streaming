@@ -25,7 +25,7 @@ recibe videos desde carpetas locales o NFS, los recodifica a **H.264/AAC**
                                   (dentro del contenedor Jellyfin)
 ```
 
-Un solo contenedor Docker (`nyanmisaka/jellyfin:latest-rockchip`) que incluye:
+Un solo contenedor Docker (`nyanmisaka/jellyfin:260326-arm64`, Jellyfin 10.11.x, pineado por digest) que incluye:
 
 - Jellyfin como servidor de media.
 - FFmpeg con aceleración hardware para Rockchip RK3588.

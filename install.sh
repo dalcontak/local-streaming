@@ -240,11 +240,11 @@ create_directory_structure() {
 pull_docker_images() {
     log_info "Descargando imagen Docker de Jellyfin con aceleración hardware..."
     
-    if docker image inspect nyanmisaka/jellyfin:latest-rockchip > /dev/null 2>&1; then
-        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip ya existe"
+    if docker image inspect nyanmisaka/jellyfin:260326-arm64@sha256:91c01c7e74a8e803593ead9972bf72842325bef36d6f07dcdbc33da331d652b8 > /dev/null 2>&1; then
+        log_success "Imagen Docker Jellyfin 10.11.x (arm64) ya existe"
     else
-        docker pull nyanmisaka/jellyfin:latest-rockchip
-        log_success "Imagen Docker nyanmisaka/jellyfin:latest-rockchip descargada"
+        docker pull nyanmisaka/jellyfin:260326-arm64@sha256:91c01c7e74a8e803593ead9972bf72842325bef36d6f07dcdbc33da331d652b8
+        log_success "Imagen Docker Jellyfin 10.11.x (arm64) descargada"
     fi
     
     # Limpiar imagen ffmpeg-arm64 vieja si existe (ya no se necesita)
@@ -299,7 +299,7 @@ create_docker_compose() {
     cat > "${BASE_DIR}/docker-compose.yml" << EOF
 services:
   jellyfin:
-    image: nyanmisaka/jellyfin:latest-rockchip
+    image: nyanmisaka/jellyfin:260326-arm64@sha256:91c01c7e74a8e803593ead9972bf72842325bef36d6f07dcdbc33da331d652b8
     container_name: jellyfin
     user: 1000:1000
     group_add:
@@ -810,7 +810,7 @@ print_summary() {
     echo ""
     echo "Contenedor Docker:"
     echo "  - Jellyfin: http://$(hostname -I | awk '{print $1}'):8096"
-    echo "    (imagen nyanmisaka/jellyfin:latest-rockchip con aceleración HW)"
+    echo "    (imagen nyanmisaka/jellyfin:260326-arm64 @10.11.x con aceleración HW)"
     echo "  - Monitor: Automatizacion de procesamiento"
     echo ""
     echo "Aceleracion hardware:"
